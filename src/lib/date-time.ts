@@ -254,28 +254,67 @@ export function parseNaturalDateString(inputStr: string): { date: string | null;
     }
   }
 
-  // 7. Weekdays ("Monday", "next Monday", "this Monday")
+  // 7. Weekday terms: "weekday", "weekdays", "next weekday"
+  const weekdayTermMatch = lower.match(/\b(?:on\s+|for\s+)?(this\s+|next\s+)?(weekdays?|weekday)\b/i);
+  if (weekdayTermMatch) {
+    const prefix = weekdayTermMatch[1] ? weekdayTermMatch[1].trim().toLowerCase() : '';
+    const todayStr = getTodayString();
+    const [y, m, d] = todayStr.split('-').map(Number);
+    const todayDate = new Date(Date.UTC(y, m - 1, d));
+    const utcDow = todayDate.getUTCDay();
+    const currWeekIndex = utcDow === 0 ? 7 : utcDow;
+
+    let daysAhead = 0;
+    if (prefix === 'next') {
+      if (currWeekIndex >= 1 && currWeekIndex <= 4) daysAhead = 1;
+      else if (currWeekIndex === 5) daysAhead = 3;
+      else if (currWeekIndex === 6) daysAhead = 2;
+      else if (currWeekIndex === 7) daysAhead = 1;
+    } else {
+      if (currWeekIndex >= 1 && currWeekIndex <= 5) daysAhead = 0;
+      else if (currWeekIndex === 6) daysAhead = 2;
+      else if (currWeekIndex === 7) daysAhead = 1;
+    }
+    return { date: getDateString(daysAhead), matchedPhrase: weekdayTermMatch[0] };
+  }
+
+  // 8. Specific Weekdays ("Monday" .. "Sunday", "this Monday", "next Monday")
   const weekdayMatch = lower.match(
-    /\b(?:on\s+|for\s+|this\s+|next\s+)?(monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat|sunday|sun)\b/i
+    /\b(?:on\s+|for\s+)?(this\s+|next\s+)?(monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat|sunday|sun)\b/i
   );
   if (weekdayMatch) {
-    const dowMap: Record<string, number> = {
-      sun: 0, sunday: 0,
+    const weekDowMap: Record<string, number> = {
       mon: 1, monday: 1,
       tue: 2, tues: 2, tuesday: 2,
       wed: 3, wednesday: 3,
       thu: 4, thur: 4, thurs: 4, thursday: 4,
       fri: 5, friday: 5,
       sat: 6, saturday: 6,
+      sun: 7, sunday: 7,
     };
-    const targetDow = dowMap[weekdayMatch[1].toLowerCase()];
-    if (targetDow !== undefined) {
+    const prefix = weekdayMatch[1] ? weekdayMatch[1].trim().toLowerCase() : '';
+    const dayName = weekdayMatch[2].toLowerCase();
+    const targetWeekIndex = weekDowMap[dayName];
+
+    if (targetWeekIndex !== undefined) {
       const todayStr = getTodayString();
       const [y, m, d] = todayStr.split('-').map(Number);
       const todayDate = new Date(Date.UTC(y, m - 1, d));
-      const currentDow = todayDate.getUTCDay();
-      let daysAhead = targetDow - currentDow;
-      if (daysAhead <= 0) daysAhead += 7;
+      const utcDow = todayDate.getUTCDay();
+      const currWeekIndex = utcDow === 0 ? 7 : utcDow;
+
+      let daysAhead = 0;
+      if (prefix === 'next') {
+        daysAhead = (targetWeekIndex - currWeekIndex) + 7;
+      } else if (prefix === 'this') {
+        daysAhead = targetWeekIndex - currWeekIndex;
+      } else {
+        if (targetWeekIndex >= currWeekIndex) {
+          daysAhead = targetWeekIndex - currWeekIndex;
+        } else {
+          daysAhead = (targetWeekIndex - currWeekIndex) + 7;
+        }
+      }
       return { date: getDateString(daysAhead), matchedPhrase: weekdayMatch[0] };
     }
   }

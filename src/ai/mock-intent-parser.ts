@@ -85,7 +85,7 @@ export function parseIntent(userMessage: string): ParseIntentResult {
   const conversationQuestions = [
     /^(?:hey|hello|hi|greetings|good\s+morning|good\s+evening)\b/i,
     /^(?:how\s+should\s+i|how\s+can\s+i|what\s+should\s+i|do\s+you\s+think|should\s+i|can\s+you\s+advise)\b/i,
-    /^(?:i\s+studied|i\s+did|i\s+went|i\s+was|i\s+am\s+tired|i\s+feel)\b/i,
+    /^(?:i\s+studied|i\s+finished|i\s+was\s+studying|i\s+did|i\s+went|i\s+was|i\s+am\s+tired|i\s+feel)\b/i,
   ];
 
   for (const pattern of conversationQuestions) {
@@ -96,7 +96,7 @@ export function parseIntent(userMessage: string): ParseIntentResult {
           error: 'Hello Mukhesh! How can I help you plan your day?',
         };
       }
-      if (/^(?:i\s+studied|i\s+did|i\s+went)/i.test(normalized)) {
+      if (/^(?:i\s+studied|i\s+finished|i\s+was\s+studying|i\s+did|i\s+went)/i.test(normalized)) {
         return {
           success: false,
           error: 'Great job completing your study session!',
@@ -216,7 +216,8 @@ export function parseIntent(userMessage: string): ParseIntentResult {
   // 7. Create task patterns
   const createPrefixes = [
     /^(?:add|create)\s+(?:task\s+)?(.+)$/i,
-    /^(?:i\s+need\s+to|need\s+to|remind\s+me\s+to|i\s+have\s+to|have\s+to|must)\s+(.+)$/i,
+    /^(?:i\s+need\s+to|need\s+to|remind\s+me\s+to|i\s+have\s+to|have\s+to|must|i\s+want\s+to|want\s+to)\s+(.+)$/i,
+    /^(?:study|work\s+on|do|practice|read|write|prepare|review)\s+(.+)$/i,
   ];
 
   let createMatch: RegExpMatchArray | null = null;
@@ -239,8 +240,7 @@ export function parseIntent(userMessage: string): ParseIntentResult {
 
     let titleStr = dateResult.cleanedText
       .replace(/^(add|create)\s+(?:task\s+)?/i, '')
-      .replace(/^(i\s+need\s+to|need\s+to|remind\s+me\s+to|i\s+have\s+to|have\s+to|must)\s+/i, '')
-      .replace(/^study\s+/i, '')
+      .replace(/^(i\s+need\s+to|need\s+to|remind\s+me\s+to|i\s+have\s+to|have\s+to|must|i\s+want\s+to|want\s+to)\s+/i, '')
       .replace(/(high|medium|low)\s+priority\s*/i, '')
       .replace(/priority\s+(high|medium|low)\s*/i, '');
 

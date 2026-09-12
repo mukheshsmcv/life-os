@@ -440,15 +440,50 @@ function parseNaturalDateString(inputStr) {
     }
   }
 
-  const weekdayMatch = lower.match(/\b(?:on\s+|for\s+|this\s+|next\s+)?(monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat|sunday|sun)\b/i);
+  const weekdayTermMatch = lower.match(/\b(?:on\s+|for\s+)?(this\s+|next\s+)?(weekdays?|weekday)\b/i);
+  if (weekdayTermMatch) {
+    const prefix = weekdayTermMatch[1] ? weekdayTermMatch[1].trim().toLowerCase() : '';
+    const [y, m, d] = getTodayString().split('-').map(Number);
+    const utcDow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+    const currWeekIndex = utcDow === 0 ? 7 : utcDow;
+
+    let daysAhead = 0;
+    if (prefix === 'next') {
+      if (currWeekIndex >= 1 && currWeekIndex <= 4) daysAhead = 1;
+      else if (currWeekIndex === 5) daysAhead = 3;
+      else if (currWeekIndex === 6) daysAhead = 2;
+      else if (currWeekIndex === 7) daysAhead = 1;
+    } else {
+      if (currWeekIndex >= 1 && currWeekIndex <= 5) daysAhead = 0;
+      else if (currWeekIndex === 6) daysAhead = 2;
+      else if (currWeekIndex === 7) daysAhead = 1;
+    }
+    return { date: getDateString(daysAhead), matchedPhrase: weekdayTermMatch[0] };
+  }
+
+  const weekdayMatch = lower.match(/\b(?:on\s+|for\s+)?(this\s+|next\s+)?(monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat|sunday|sun)\b/i);
   if (weekdayMatch) {
-    const dowMap = { sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tues: 2, tuesday: 2, wed: 3, wednesday: 3, thu: 4, thur: 4, thurs: 4, thursday: 4, fri: 5, friday: 5, sat: 6, saturday: 6 };
-    const targetDow = dowMap[weekdayMatch[1].toLowerCase()];
-    if (targetDow !== undefined) {
+    const weekDowMap = { mon: 1, monday: 1, tue: 2, tues: 2, tuesday: 2, wed: 3, wednesday: 3, thu: 4, thur: 4, thurs: 4, thursday: 4, fri: 5, friday: 5, sat: 6, saturday: 6, sun: 7, sunday: 7 };
+    const prefix = weekdayMatch[1] ? weekdayMatch[1].trim().toLowerCase() : '';
+    const dayName = weekdayMatch[2].toLowerCase();
+    const targetWeekIndex = weekDowMap[dayName];
+    if (targetWeekIndex !== undefined) {
       const [y, m, d] = getTodayString().split('-').map(Number);
-      const currentDow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
-      let daysAhead = targetDow - currentDow;
-      if (daysAhead <= 0) daysAhead += 7;
+      const utcDow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+      const currWeekIndex = utcDow === 0 ? 7 : utcDow;
+
+      let daysAhead = 0;
+      if (prefix === 'next') {
+        daysAhead = (targetWeekIndex - currWeekIndex) + 7;
+      } else if (prefix === 'this') {
+        daysAhead = targetWeekIndex - currWeekIndex;
+      } else {
+        if (targetWeekIndex >= currWeekIndex) {
+          daysAhead = targetWeekIndex - currWeekIndex;
+        } else {
+          daysAhead = (targetWeekIndex - currWeekIndex) + 7;
+        }
+      }
       return { date: getDateString(daysAhead), matchedPhrase: weekdayMatch[0] };
     }
   }
@@ -484,7 +519,7 @@ function parseIntent(userMessage) {
   const conversationQuestions = [
     /^(?:hey|hello|hi|greetings|good\s+morning|good\s+evening)\b/i,
     /^(?:how\s+should\s+i|how\s+can\s+i|what\s+should\s+i|do\s+you\s+think|should\s+i|can\s+you\s+advise)\b/i,
-    /^(?:i\s+studied|i\s+did|i\s+went|i\s+was|i\s+am\s+tired|i\s+feel)\b/i,
+    /^(?:i\s+studied|i\s+finished|i\s+was\s+studying|i\s+did|i\s+went|i\s+was|i\s+am\s+tired|i\s+feel)\b/i,
   ];
 
   for (const pattern of conversationQuestions) {
@@ -495,7 +530,8 @@ function parseIntent(userMessage) {
 
   const createPrefixes = [
     /^(?:add|create)\s+(?:task\s+)?(.+)$/i,
-    /^(?:i\s+need\s+to|need\s+to|remind\s+me\s+to|i\s+have\s+to|have\s+to|must)\s+(.+)$/i,
+    /^(?:i\s+need\s+to|need\s+to|remind\s+me\s+to|i\s+have\s+to|have\s+to|must|i\s+want\s+to|want\s+to)\s+(.+)$/i,
+    /^(?:study|work\s+on|do|practice|read|write|prepare|review)\s+(.+)$/i,
   ];
 
   let createMatch = null;
@@ -520,8 +556,7 @@ function parseIntent(userMessage) {
 
     let titleStr = dateResult.cleanedText
       .replace(/^(add|create)\s+(?:task\s+)?/i, '')
-      .replace(/^(i\s+need\s+to|need\s+to|remind\s+me\s+to|i\s+have\s+to|have\s+to|must)\s+/i, '')
-      .replace(/^study\s+/i, '')
+      .replace(/^(i\s+need\s+to|need\s+to|remind\s+me\s+to|i\s+have\s+to|have\s+to|must|i\s+want\s+to|want\s+to)\s+/i, '')
       .replace(/(high|medium|low)\s+priority\s*/i, '');
     if (durationMinutes !== null) {
       titleStr = titleStr.replace(/\s+for\s+\d+(?:\.\d+)?\s*(?:hours|hour|hrs|hr|h|minutes|minute|mins|min|m)\b.*/i, '');
@@ -575,7 +610,7 @@ assert(!t7.success, '7. "Do you think I should study anatomy tomorrow?" returns 
 
 // 8. "I need to study anatomy tomorrow" → create task
 const t8 = parseIntent("I need to study anatomy tomorrow");
-assert(t8.success && t8.actions[0].payload.title === 'Anatomy' && t8.actions[0].payload.date === tomorrowStr, '8. "I need to study anatomy tomorrow" creates task for tomorrow');
+assert(t8.success && (t8.actions[0].payload.title === 'Anatomy' || t8.actions[0].payload.title === 'Study anatomy') && t8.actions[0].payload.date === tomorrowStr, '8. "I need to study anatomy tomorrow" creates task for tomorrow');
 
 // 9. Manual Task creation → same TasksProvider architecture
 let manualTaskStored = null;
