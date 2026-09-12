@@ -27,6 +27,7 @@ export type UpdateTaskAction = {
     title?: string;
     durationMinutes?: number;
     priority?: TaskPriority;
+    date?: string | null;
   };
 };
 
