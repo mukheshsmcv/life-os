@@ -24,8 +24,20 @@ function loadEnv() {
 loadEnv();
 
 const PORT = process.env.SERVER_PORT || process.env.PORT || 3001;
+
+// AI provider selection: gemini | groq | qwen
+const AI_PROVIDER = (process.env.AI_PROVIDER || 'gemini').toLowerCase();
+
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+const GROQ_BASE_URL = process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1';
+
+const QWEN_API_KEY = process.env.QWEN_API_KEY || '';
+const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen3.5-flash';
+const QWEN_BASE_URL = process.env.QWEN_BASE_URL || 'https://dashscope-us.aliyuncs.com/compatible-mode/v1';
 
 function getLocalIpAddresses() {
   const interfaces = os.networkInterfaces();
@@ -198,6 +210,77 @@ async function callGemini(userMessage, context) {
   return parsed.actions;
 }
 
+async function callOpenAICompatible(providerName, apiKey, baseUrl, model, userMessage, context) {
+  if (!apiKey) {
+    throw new Error(`${providerName.toUpperCase()}_API_KEY is not set in environment or .env file.`);
+  }
+
+  const promptText = buildSystemPrompt(userMessage, context);
+  const url = `${baseUrl.replace(/\/$/, '')}/chat/completions`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: promptText }],
+      temperature: 0.1,
+      response_format: { type: 'json_object' },
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`${providerName} API error (${response.status}): ${errorText}`);
+  }
+
+  const data = await response.json();
+  const rawText = data?.choices?.[0]?.message?.content;
+  if (!rawText) {
+    throw new Error(`Empty response payload from ${providerName} API.`);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (err) {
+    throw new Error(`Failed to parse ${providerName} JSON output: ${err.message}`);
+  }
+
+  if (!parsed || !Array.isArray(parsed.actions)) {
+    throw new Error(`Invalid JSON structure returned by ${providerName}: missing "actions" array.`);
+  }
+
+  return parsed.actions;
+}
+
+async function callProvider(userMessage, context) {
+  switch (AI_PROVIDER) {
+    case 'groq':
+      return await callOpenAICompatible('groq', GROQ_API_KEY, GROQ_BASE_URL, GROQ_MODEL, userMessage, context);
+    case 'qwen':
+      return await callOpenAICompatible('qwen', QWEN_API_KEY, QWEN_BASE_URL, QWEN_MODEL, userMessage, context);
+    case 'gemini':
+    default:
+      return await callGemini(userMessage, context);
+  }
+}
+
+function getProviderConfig() {
+  switch (AI_PROVIDER) {
+    case 'groq':
+      return { provider: 'groq', model: GROQ_MODEL, hasApiKey: Boolean(GROQ_API_KEY) };
+    case 'qwen':
+      return { provider: 'qwen', model: QWEN_MODEL, hasApiKey: Boolean(QWEN_API_KEY) };
+    case 'gemini':
+    default:
+      return { provider: 'gemini', model: GEMINI_MODEL, hasApiKey: Boolean(GEMINI_API_KEY) };
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -212,7 +295,7 @@ const server = http.createServer(async (req, res) => {
   // Development Health Check Endpoint
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, model: GEMINI_MODEL, hasApiKey: Boolean(GEMINI_API_KEY) }));
+    res.end(JSON.stringify({ ok: true, ...getProviderConfig() }));
     return;
   }
 
@@ -234,16 +317,18 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        const actions = await callGemini(userMessage, context);
+        const actions = await callProvider(userMessage, context);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, actions, mode: 'real_ai' }));
+        res.end(JSON.stringify({ success: true, actions, mode: 'real_ai', provider: AI_PROVIDER }));
       } catch (error) {
-        const isGeminiErr = error.message && error.message.includes('Gemini API error');
+        const errorMessage = error.message || String(error);
+        const isProviderErr = /API error/i.test(errorMessage);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           success: false,
-          errorType: isGeminiErr ? 'GEMINI_API_ERROR' : 'SERVER_ERROR',
-          error: error.message,
+          errorType: isProviderErr ? 'PROVIDER_API_ERROR' : 'SERVER_ERROR',
+          provider: AI_PROVIDER,
+          error: errorMessage,
         }));
       }
     });
@@ -258,10 +343,12 @@ const server = http.createServer(async (req, res) => {
 // Bind to 0.0.0.0 so server listens on LAN and localhost
 server.listen(PORT, '0.0.0.0', () => {
   const localIps = getLocalIpAddresses();
+  const config = getProviderConfig();
   console.log(`\n==================================================`);
   console.log(`[Life OS AI Backend] Server running on port ${PORT}`);
-  console.log(`[Life OS AI Backend] Configured Model: ${GEMINI_MODEL}`);
-  console.log(`[Life OS AI Backend] API Key Set: ${GEMINI_API_KEY ? 'YES' : 'NO (Set GEMINI_API_KEY in .env)'}`);
+  console.log(`[Life OS AI Backend] Provider: ${config.provider}`);
+  console.log(`[Life OS AI Backend] Configured Model: ${config.model}`);
+  console.log(`[Life OS AI Backend] API Key Set: ${config.hasApiKey ? 'YES' : `NO (Set ${config.provider.toUpperCase()}_API_KEY in .env)`}`);
   console.log(`[Life OS AI Backend] Health check: http://localhost:${PORT}/health`);
   console.log(`--------------------------------------------------`);
   console.log(`Reachable IP Addresses for Physical Device Testing:`);
