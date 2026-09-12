@@ -49,7 +49,7 @@ function formatMinutesToTime(totalMins: number): string {
 }
 
 export default function CalendarScreen() {
-  const { tasks, getEventsForDate } = useTasks();
+  const { tasks, getEventsForDate, completeTask, deleteTask, deleteEvent } = useTasks();
   const todayStr = getTodayString();
   const dateStrip = buildDateStrip();
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
@@ -171,6 +171,11 @@ export default function CalendarScreen() {
                           {ev.endMinute - ev.startMinute} min{ev.notes ? ` · ${ev.notes}` : ''}
                         </Text>
                       </View>
+                      <View style={styles.cardActions}>
+                        <Pressable style={styles.deleteButton} onPress={() => deleteEvent(ev.id)}>
+                          <Text style={styles.deleteButtonText}>Delete</Text>
+                        </Pressable>
+                      </View>
                     </View>
                   </View>
                 ))}
@@ -198,6 +203,16 @@ export default function CalendarScreen() {
                           {block.durationMinutes} min · {block.priority}
                           {block.status !== 'pending' ? ` · ${block.status}` : ''}
                         </Text>
+                      </View>
+                      <View style={styles.cardActions}>
+                        {block.status === 'pending' && (
+                          <Pressable style={styles.completeButton} onPress={() => completeTask(block.id)}>
+                            <Text style={styles.completeButtonText}>Done</Text>
+                          </Pressable>
+                        )}
+                        <Pressable style={styles.deleteButton} onPress={() => deleteTask(block.id)}>
+                          <Text style={styles.deleteButtonText}>Delete</Text>
+                        </Pressable>
                       </View>
                     </View>
                   </View>
@@ -228,6 +243,16 @@ export default function CalendarScreen() {
                           {block.status !== 'pending' ? ` · ${block.status}` : ''}
                         </Text>
                       </View>
+                      <View style={styles.cardActions}>
+                        {block.status === 'pending' && (
+                          <Pressable style={styles.completeButton} onPress={() => completeTask(block.id)}>
+                            <Text style={styles.completeButtonText}>Done</Text>
+                          </Pressable>
+                        )}
+                        <Pressable style={styles.deleteButton} onPress={() => deleteTask(block.id)}>
+                          <Text style={styles.deleteButtonText}>Delete</Text>
+                        </Pressable>
+                      </View>
                     </View>
                   </View>
                 ))}
@@ -247,6 +272,16 @@ export default function CalendarScreen() {
                       <View style={styles.taskDetails}>
                         <Text style={styles.taskTitle}>{task.title}</Text>
                         <Text style={styles.taskMeta}>{task.durationMinutes} min · {task.priority} · unscheduled</Text>
+                      </View>
+                      <View style={styles.cardActions}>
+                        {task.status === 'pending' && (
+                          <Pressable style={styles.completeButton} onPress={() => completeTask(task.id)}>
+                            <Text style={styles.completeButtonText}>Done</Text>
+                          </Pressable>
+                        )}
+                        <Pressable style={styles.deleteButton} onPress={() => deleteTask(task.id)}>
+                          <Text style={styles.deleteButtonText}>Delete</Text>
+                        </Pressable>
                       </View>
                     </View>
                   </View>
@@ -343,11 +378,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#171A20',
     borderRadius: 14,
     overflow: 'hidden',
+    alignItems: 'center',
   },
   taskBodyDone: { opacity: 0.55 },
   taskBodyUnscheduled: { borderWidth: 1, borderColor: '#252932', backgroundColor: '#0F1115' },
 
-  priorityStripe: { width: 4 },
+  priorityStripe: { width: 4, alignSelf: 'stretch' },
   priority_high: { backgroundColor: '#FF7B7B' },
   priority_medium: { backgroundColor: '#A7A0FF' },
   priority_low: { backgroundColor: '#4A5060' },
@@ -356,4 +392,32 @@ const styles = StyleSheet.create({
   taskTitle: { color: '#E8E9EC', fontSize: 15, fontWeight: '600' },
   taskTitleDone: { color: '#636870', textDecorationLine: 'line-through' },
   taskMeta: { color: '#737983', fontSize: 12, marginTop: 4 },
-} as any); // `as any` for dynamic priority_ keys
+
+  cardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingRight: 12,
+    gap: 6,
+  },
+  completeButton: {
+    backgroundColor: '#A7A0FF',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  completeButtonText: {
+    color: '#171A20',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  deleteButton: {
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+  },
+  deleteButtonText: {
+    color: '#FF9A9A',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+} as any);
+ // `as any` for dynamic priority_ keys

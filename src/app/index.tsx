@@ -10,15 +10,37 @@ import {
   type DimensionValue,
 } from 'react-native';
 
-import { Task, useTasks } from '@/contexts/tasks-context';
+import { Event, Task, useTasks } from '@/contexts/tasks-context';
 import {
   DEFAULT_SCHEDULING_SETTINGS,
-  ScheduledBlock,
+  ScheduleResult,
   scheduleTasks,
 } from '@/lib/scheduler';
 import { getTodayString } from '@/lib/date-time';
 
-type ScheduledActivity = Task & ScheduledBlock;
+type Activity =
+  | {
+      isEvent: false;
+      id: string;
+      title: string;
+      durationMinutes: number;
+      start: Date;
+      end: Date;
+      startMinute: number;
+      endMinute: number;
+      task: Task;
+    }
+  | {
+      isEvent: true;
+      id: string;
+      title: string;
+      durationMinutes: number;
+      start: Date;
+      end: Date;
+      startMinute: number;
+      endMinute: number;
+      event: Event;
+    };
 
 function dateToTime(date: Date) {
   const hours = date.getHours();
@@ -40,7 +62,7 @@ function formatDuration(minutes: number) {
 
 export default function HomeScreen() {
   const router = useRouter();
-  const { tasks, completeTask, skipTask } = useTasks();
+  const { tasks, events, getEventsForDate, completeTask, skipTask } = useTasks();
   const [currentTime, setCurrentTime] = useState(() => new Date());
   const [pausedActivity, setPausedActivity] = useState<{ id: string; pausedAt: Date } | null>(null);
 
@@ -50,23 +72,72 @@ export default function HomeScreen() {
   }, []);
 
   const todayStr = getTodayString();
-  // Today shows:
-  //   1. Tasks explicitly pinned to today (date === todayStr)
-  //   2. Undated tasks (date == null) — the scheduler decides their slot; scheduling does NOT assign them a date.
-  // Tasks explicitly pinned to a different date are excluded.
   const todayTasks = tasks.filter((task) => task.date === todayStr || task.date == null);
-  const schedule = scheduleTasks(todayTasks, DEFAULT_SCHEDULING_SETTINGS, currentTime);
+  const todayEvents = getEventsForDate ? getEventsForDate(todayStr) : events.filter((e) => e.date === todayStr);
+
+  const schedulerEvents = todayEvents.map((e) => ({
+    id: e.id,
+    title: e.title,
+    startMinute: e.startMinute,
+    endMinute: e.endMinute,
+  }));
+
+  const schedule: ScheduleResult = scheduleTasks(
+    todayTasks,
+    DEFAULT_SCHEDULING_SETTINGS,
+    currentTime,
+    schedulerEvents
+  );
+
   const taskById = new Map(todayTasks.map((task) => [task.id, task]));
-  const scheduledActivities = schedule.blocks.flatMap((block) => {
-    const task = taskById.get(block.taskId);
-    return task ? [{ ...task, ...block }] : [];
+  const eventById = new Map(todayEvents.map((event) => [event.id, event]));
+
+  const scheduledActivities: Activity[] = schedule.blocks.flatMap<Activity>((block): Activity[] => {
+    if (block.taskId.startsWith('event-')) {
+      const eventId = block.taskId.slice(6);
+      const event = eventById.get(eventId);
+      return event
+        ? [
+            {
+              isEvent: true,
+              id: block.taskId,
+              title: event.title,
+              durationMinutes: event.endMinute - event.startMinute,
+              start: block.start,
+              end: block.end,
+              startMinute: block.startMinute,
+              endMinute: block.endMinute,
+              event,
+            },
+          ]
+        : [];
+    } else {
+      const task = taskById.get(block.taskId);
+      return task
+        ? [
+            {
+              isEvent: false,
+              id: task.id,
+              title: task.title,
+              durationMinutes: task.durationMinutes,
+              start: block.start,
+              end: block.end,
+              startMinute: block.startMinute,
+              endMinute: block.endMinute,
+              task,
+            },
+          ]
+        : [];
+    }
   });
+
   const unscheduledTasks = schedule.unscheduledTaskIds.flatMap((taskId) => {
     const task = taskById.get(taskId);
     return task ? [task] : [];
   });
+
   const pausedActivityInSchedule = pausedActivity
-    ? scheduledActivities.find((activity) => activity.id === pausedActivity.id)
+    ? scheduledActivities.find((activity) => !activity.isEvent && activity.id === pausedActivity.id)
     : undefined;
   const timedCurrentActivity = scheduledActivities.find(
     (activity) => currentTime >= activity.start && currentTime < activity.end
@@ -76,7 +147,10 @@ export default function HomeScreen() {
   const upcomingActivities = scheduledActivities.filter((activity) => activity.start > currentTime);
   const isCurrentActivityPaused = Boolean(pausedActivityInSchedule);
   const displayedScheduledActivity = currentActivity ?? nextActivity;
-  const displayedTask = displayedScheduledActivity ?? unscheduledTasks[0];
+
+  const displayedTitle =
+    displayedScheduledActivity?.title ?? unscheduledTasks[0]?.title ?? 'Day complete';
+
   const progressTime = pausedActivityInSchedule ? pausedActivity!.pausedAt : currentTime;
   const progressPercent = currentActivity
     ? Math.min(
@@ -91,21 +165,30 @@ export default function HomeScreen() {
     : 0;
 
   const handleDone = () => {
-    if (!currentActivity) return;
+    if (!currentActivity || currentActivity.isEvent) return;
     completeTask(currentActivity.id);
     setPausedActivity(null);
   };
   const handleSkip = () => {
-    if (!currentActivity) return;
+    if (!currentActivity || currentActivity.isEvent) return;
     skipTask(currentActivity.id);
     setPausedActivity(null);
   };
   const handlePause = () => {
-    if (!currentActivity) return;
+    if (!currentActivity || currentActivity.isEvent) return;
     setPausedActivity((activity) =>
       activity?.id === currentActivity.id ? null : { id: currentActivity.id, pausedAt: currentTime }
     );
   };
+
+  const nowLabelText = (() => {
+    if (isCurrentActivityPaused) return 'PAUSED';
+    if (currentActivity) return currentActivity.isEvent ? 'FIXED EVENT · NOW' : 'NOW';
+    if (displayedScheduledActivity)
+      return displayedScheduledActivity.isEvent ? 'FIXED EVENT · UP NEXT' : 'UP NEXT';
+    if (unscheduledTasks.length > 0) return 'NOT SCHEDULED';
+    return 'DAY COMPLETE';
+  })();
 
   return (
     <SafeAreaView style={styles.container}>
@@ -115,28 +198,21 @@ export default function HomeScreen() {
             <Text style={styles.greeting}>Good evening</Text>
             <Text style={styles.name}>Mukhesh</Text>
           </View>
-          <View style={styles.profileCircle}><Text style={styles.profileText}>M</Text></View>
+          <View style={styles.profileCircle}>
+            <Text style={styles.profileText}>M</Text>
+          </View>
         </View>
 
         <View style={styles.nowCard}>
-          <Text style={styles.nowLabel}>
-            {isCurrentActivityPaused
-              ? 'PAUSED'
-              : currentActivity
-                ? 'NOW'
-                : displayedScheduledActivity
-                  ? 'UP NEXT'
-                  : displayedTask
-                    ? 'NOT SCHEDULED'
-                    : 'DAY COMPLETE'}
-          </Text>
-          <Text style={styles.currentTask}>{displayedTask?.title ?? 'Day complete'}</Text>
-          {displayedTask ? (
+          <Text style={styles.nowLabel}>{nowLabelText}</Text>
+          <Text style={styles.currentTask}>{displayedTitle}</Text>
+          {displayedScheduledActivity || unscheduledTasks[0] ? (
             <>
               {displayedScheduledActivity ? (
                 <>
                   <Text style={styles.time}>
-                    {dateToTime(displayedScheduledActivity.start)} — {dateToTime(displayedScheduledActivity.end)}
+                    {dateToTime(displayedScheduledActivity.start)} —{' '}
+                    {dateToTime(displayedScheduledActivity.end)}
                   </Text>
                   <View style={styles.progressBackground}>
                     <View
@@ -148,31 +224,66 @@ export default function HomeScreen() {
                   </View>
                 </>
               ) : (
-                <Text style={styles.time}>Not scheduled today · {displayedTask.durationMinutes} min</Text>
+                <Text style={styles.time}>
+                  Not scheduled today · {unscheduledTasks[0].durationMinutes} min
+                </Text>
               )}
               <Text style={styles.remaining}>
                 {isCurrentActivityPaused
                   ? 'Activity paused'
                   : currentActivity
-                    ? formatDuration(Math.max(0, Math.ceil((currentActivity.end.getTime() - currentTime.getTime()) / 60000))) + ' remaining'
+                    ? formatDuration(
+                        Math.max(
+                          0,
+                          Math.ceil((currentActivity.end.getTime() - currentTime.getTime()) / 60000)
+                        )
+                      ) + ' remaining'
                     : displayedScheduledActivity
-                      ? 'Starts in ' + formatDuration(Math.max(0, Math.ceil((displayedScheduledActivity.start.getTime() - currentTime.getTime()) / 60000)))
+                      ? 'Starts in ' +
+                        formatDuration(
+                          Math.max(
+                            0,
+                            Math.ceil(
+                              (displayedScheduledActivity.start.getTime() - currentTime.getTime()) /
+                                60000
+                            )
+                          )
+                        )
                       : 'No open time remains in today’s planning window'}
               </Text>
-              {currentActivity && (
+              {currentActivity && !currentActivity.isEvent && (
                 <View style={styles.actions}>
-                  <Pressable style={styles.actionButton} onPress={handleDone}><Text style={styles.actionText}>Done</Text></Pressable>
-                  <Pressable style={styles.secondaryButton} onPress={handlePause}><Text style={styles.secondaryText}>{isCurrentActivityPaused ? 'Resume' : 'Pause'}</Text></Pressable>
-                  <Pressable style={styles.secondaryButton} onPress={handleSkip}><Text style={styles.secondaryText}>Can't do this</Text></Pressable>
+                  <Pressable style={styles.actionButton} onPress={handleDone}>
+                    <Text style={styles.actionText}>Done</Text>
+                  </Pressable>
+                  <Pressable style={styles.secondaryButton} onPress={handlePause}>
+                    <Text style={styles.secondaryText}>
+                      {isCurrentActivityPaused ? 'Resume' : 'Pause'}
+                    </Text>
+                  </Pressable>
+                  <Pressable style={styles.secondaryButton} onPress={handleSkip}>
+                    <Text style={styles.secondaryText}>Can't do this</Text>
+                  </Pressable>
                 </View>
               )}
             </>
-          ) : <Text style={styles.remaining}>No more activities today</Text>}
+          ) : (
+            <Text style={styles.remaining}>No more activities today</Text>
+          )}
         </View>
 
-        <View style={styles.sectionHeader}><Text style={styles.sectionTitle}>Up next</Text></View>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Up next</Text>
+        </View>
         {upcomingActivities.map((activity) => (
-          <ScheduleItem key={activity.id} start={activity.start} end={activity.end} title={activity.title} duration={activity.durationMinutes} />
+          <ScheduleItem
+            key={activity.id}
+            start={activity.start}
+            end={activity.end}
+            title={activity.title}
+            duration={activity.durationMinutes}
+            isEvent={activity.isEvent}
+          />
         ))}
         {unscheduledTasks.length > 0 && (
           <>
@@ -202,15 +313,36 @@ export default function HomeScreen() {
   );
 }
 
-function ScheduleItem({ start, end, title, duration, timeLabel }: {
-  start?: Date; end?: Date; title: string; duration: number; timeLabel?: string;
+function ScheduleItem({
+  start,
+  end,
+  title,
+  duration,
+  timeLabel,
+  isEvent,
+}: {
+  start?: Date;
+  end?: Date;
+  title: string;
+  duration: number;
+  timeLabel?: string;
+  isEvent?: boolean;
 }) {
   return (
     <View style={styles.scheduleItem}>
-      <Text style={styles.itemTime}>{timeLabel ?? (start && end ? dateToTime(start) + ' — ' + dateToTime(end) : '')}</Text>
-      <View style={styles.itemLine} />
-      <View style={styles.itemContent}>
-        <Text style={styles.itemTitle}>{title}</Text>
+      <Text style={styles.itemTime}>
+        {timeLabel ?? (start && end ? dateToTime(start) + ' — ' + dateToTime(end) : '')}
+      </Text>
+      <View style={[styles.itemLine, isEvent && styles.itemLineEvent]} />
+      <View style={[styles.itemContent, isEvent && styles.itemContentEvent]}>
+        <View style={styles.itemHeaderRow}>
+          <Text style={styles.itemTitle}>{title}</Text>
+          {isEvent && (
+            <View style={styles.eventBadge}>
+              <Text style={styles.eventBadgeText}>FIXED EVENT</Text>
+            </View>
+          )}
+        </View>
         <Text style={styles.itemDuration}>{duration} min</Text>
       </View>
     </View>
@@ -243,9 +375,14 @@ const styles = StyleSheet.create({
   scheduleItem: { flexDirection: 'row', alignItems: 'center', marginBottom: 17 },
   itemTime: { width: 70, color: '#858A94', fontSize: 13 },
   itemLine: { width: 2, height: 35, backgroundColor: '#30343C', marginRight: 15 },
-  itemContent: { flex: 1, backgroundColor: '#14171C', padding: 14, borderRadius: 14, flexDirection: 'row', justifyContent: 'space-between' },
+  itemLineEvent: { backgroundColor: '#A7A0FF' },
+  itemContent: { flex: 1, backgroundColor: '#14171C', padding: 14, borderRadius: 14 },
+  itemContentEvent: { borderColor: '#A7A0FF', borderWidth: 1 },
+  itemHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   itemTitle: { color: '#E8E9EC', fontSize: 15, fontWeight: '600' },
-  itemDuration: { color: '#737983', fontSize: 13 },
+  eventBadge: { backgroundColor: '#261F12', borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
+  eventBadgeText: { color: '#FCD34D', fontSize: 10, fontWeight: '700' },
+  itemDuration: { color: '#737983', fontSize: 13, marginTop: 4 },
   aiButton: { marginTop: 15, backgroundColor: '#202329', borderRadius: 18, padding: 17, flexDirection: 'row', alignItems: 'center' },
   aiIcon: { color: '#A7A0FF', fontSize: 25, marginRight: 13 },
   aiTextContainer: { flex: 1 },
@@ -253,3 +390,4 @@ const styles = StyleSheet.create({
   aiSubtitle: { color: '#777D87', fontSize: 12, marginTop: 3 },
   arrow: { color: '#9A9EA6', fontSize: 27 },
 });
+

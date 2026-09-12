@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 
 import { useTasks, TaskPriority } from '@/contexts/tasks-context';
-import { getTodayString, getDateString } from '@/lib/date-time';
+import { getTodayString, getDateString, isValidDateString } from '@/lib/date-time';
 
 type Props = {
   visible: boolean;
@@ -20,6 +20,7 @@ type Props = {
 export function AddActionModal({ visible, onClose }: Props) {
   const { addTask, addEvent } = useTasks();
   const [activeTab, setActiveTab] = useState<'task' | 'event'>('task');
+  const [formError, setFormError] = useState<string | null>(null);
 
   // Task form state
   const [taskTitle, setTaskTitle] = useState('');
@@ -41,6 +42,7 @@ export function AddActionModal({ visible, onClose }: Props) {
   const tomorrowStr = getDateString(1);
 
   const resetForm = () => {
+    setFormError(null);
     setTaskTitle('');
     setTaskDuration(60);
     setTaskCustomDuration('');
@@ -56,20 +58,46 @@ export function AddActionModal({ visible, onClose }: Props) {
     setEventNotes('');
   };
 
+  const switchTab = (tab: 'task' | 'event') => {
+    setFormError(null);
+    setActiveTab(tab);
+  };
+
   const handleCreateTask = () => {
-    if (!taskTitle.trim()) return;
+    setFormError(null);
+
+    if (!taskTitle.trim()) {
+      setFormError('Task title is required.');
+      return;
+    }
 
     let finalDuration = taskDuration;
     if (taskCustomDuration.trim()) {
       const parsed = parseInt(taskCustomDuration, 10);
-      if (parsed > 0) finalDuration = parsed;
+      if (isNaN(parsed) || parsed <= 0) {
+        setFormError('Duration must be greater than 0 minutes.');
+        return;
+      }
+      finalDuration = parsed;
+    }
+
+    if (finalDuration <= 0) {
+      setFormError('Duration must be greater than 0 minutes.');
+      return;
     }
 
     let finalDate: string | null = null;
-    if (taskDateType === 'today') finalDate = todayStr;
-    else if (taskDateType === 'tomorrow') finalDate = tomorrowStr;
-    else if (taskDateType === 'custom' && taskCustomDate.trim()) {
-      finalDate = taskCustomDate.trim();
+    if (taskDateType === 'today') {
+      finalDate = todayStr;
+    } else if (taskDateType === 'tomorrow') {
+      finalDate = tomorrowStr;
+    } else if (taskDateType === 'custom') {
+      const trimmedDate = taskCustomDate.trim();
+      if (!trimmedDate || !isValidDateString(trimmedDate)) {
+        setFormError('Enter a valid date in YYYY-MM-DD format (e.g. 2026-09-26).');
+        return;
+      }
+      finalDate = trimmedDate;
     }
 
     addTask({
@@ -83,11 +111,12 @@ export function AddActionModal({ visible, onClose }: Props) {
     onClose();
   };
 
-  function parseTimeToMinutes(timeStr: string): number {
+  function parseTimeToMinutes(timeStr: string): number | null {
     const match = timeStr.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-    if (!match) return 19 * 60; // default 7 PM
+    if (!match) return null;
     let hours = parseInt(match[1], 10);
     const minutes = parseInt(match[2], 10);
+    if (hours < 1 || hours > 12 || minutes < 0 || minutes > 59) return null;
     const period = match[3].toUpperCase();
     if (period === 'PM' && hours < 12) hours += 12;
     if (period === 'AM' && hours === 12) hours = 0;
@@ -95,22 +124,47 @@ export function AddActionModal({ visible, onClose }: Props) {
   }
 
   const handleCreateEvent = () => {
-    if (!eventTitle.trim()) return;
+    setFormError(null);
+
+    if (!eventTitle.trim()) {
+      setFormError('Event title is required.');
+      return;
+    }
 
     let finalDate = todayStr;
-    if (eventDateType === 'tomorrow') finalDate = tomorrowStr;
-    else if (eventDateType === 'custom' && eventCustomDate.trim()) {
-      finalDate = eventCustomDate.trim();
+    if (eventDateType === 'tomorrow') {
+      finalDate = tomorrowStr;
+    } else if (eventDateType === 'custom') {
+      const trimmedDate = eventCustomDate.trim();
+      if (!trimmedDate || !isValidDateString(trimmedDate)) {
+        setFormError('Enter a valid date in YYYY-MM-DD format (e.g. 2026-09-26).');
+        return;
+      }
+      finalDate = trimmedDate;
     }
 
     const startMin = parseTimeToMinutes(eventStartTime);
+    if (startMin === null) {
+      setFormError('Enter a valid start time (e.g. 07:00 PM).');
+      return;
+    }
+
     const endMin = parseTimeToMinutes(eventEndTime);
+    if (endMin === null) {
+      setFormError('Enter a valid end time (e.g. 09:00 PM).');
+      return;
+    }
+
+    if (endMin <= startMin) {
+      setFormError('End time must be after start time.');
+      return;
+    }
 
     addEvent({
       title: eventTitle.trim(),
       date: finalDate,
       startMinute: startMin,
-      endMinute: Math.max(startMin + 15, endMin),
+      endMinute: endMin,
       notes: eventNotes.trim() || undefined,
     });
 
@@ -126,14 +180,14 @@ export function AddActionModal({ visible, onClose }: Props) {
           <View style={styles.header}>
             <View style={styles.tabSelector}>
               <Pressable
-                onPress={() => setActiveTab('task')}
+                onPress={() => switchTab('task')}
                 style={[styles.tabButton, activeTab === 'task' && styles.tabButtonActive]}>
                 <Text style={[styles.tabText, activeTab === 'task' && styles.tabTextActive]}>
                   ➕ Task
                 </Text>
               </Pressable>
               <Pressable
-                onPress={() => setActiveTab('event')}
+                onPress={() => switchTab('event')}
                 style={[styles.tabButton, activeTab === 'event' && styles.tabButtonActive]}>
                 <Text style={[styles.tabText, activeTab === 'event' && styles.tabTextActive]}>
                   📅 Fixed Event
@@ -152,7 +206,10 @@ export function AddActionModal({ visible, onClose }: Props) {
                 <Text style={styles.label}>TASK TITLE</Text>
                 <TextInput
                   value={taskTitle}
-                  onChangeText={setTaskTitle}
+                  onChangeText={(text) => {
+                    setTaskTitle(text);
+                    if (formError) setFormError(null);
+                  }}
                   placeholder="e.g. Study Pathology"
                   placeholderTextColor="#636870"
                   style={styles.input}
@@ -166,6 +223,7 @@ export function AddActionModal({ visible, onClose }: Props) {
                       onPress={() => {
                         setTaskDuration(mins);
                         setTaskCustomDuration('');
+                        if (formError) setFormError(null);
                       }}
                       style={[
                         styles.chip,
@@ -185,28 +243,40 @@ export function AddActionModal({ visible, onClose }: Props) {
                 <Text style={[styles.label, { marginTop: 16 }]}>DATE</Text>
                 <View style={styles.chipRow}>
                   <Pressable
-                    onPress={() => setTaskDateType('anytime')}
+                    onPress={() => {
+                      setTaskDateType('anytime');
+                      if (formError) setFormError(null);
+                    }}
                     style={[styles.chip, taskDateType === 'anytime' && styles.chipActive]}>
                     <Text style={[styles.chipText, taskDateType === 'anytime' && styles.chipTextActive]}>
                       Anytime
                     </Text>
                   </Pressable>
                   <Pressable
-                    onPress={() => setTaskDateType('today')}
+                    onPress={() => {
+                      setTaskDateType('today');
+                      if (formError) setFormError(null);
+                    }}
                     style={[styles.chip, taskDateType === 'today' && styles.chipActive]}>
                     <Text style={[styles.chipText, taskDateType === 'today' && styles.chipTextActive]}>
                       Today
                     </Text>
                   </Pressable>
                   <Pressable
-                    onPress={() => setTaskDateType('tomorrow')}
+                    onPress={() => {
+                      setTaskDateType('tomorrow');
+                      if (formError) setFormError(null);
+                    }}
                     style={[styles.chip, taskDateType === 'tomorrow' && styles.chipActive]}>
                     <Text style={[styles.chipText, taskDateType === 'tomorrow' && styles.chipTextActive]}>
                       Tomorrow
                     </Text>
                   </Pressable>
                   <Pressable
-                    onPress={() => setTaskDateType('custom')}
+                    onPress={() => {
+                      setTaskDateType('custom');
+                      if (formError) setFormError(null);
+                    }}
                     style={[styles.chip, taskDateType === 'custom' && styles.chipActive]}>
                     <Text style={[styles.chipText, taskDateType === 'custom' && styles.chipTextActive]}>
                       Custom
@@ -217,7 +287,10 @@ export function AddActionModal({ visible, onClose }: Props) {
                 {taskDateType === 'custom' && (
                   <TextInput
                     value={taskCustomDate}
-                    onChangeText={setTaskCustomDate}
+                    onChangeText={(text) => {
+                      setTaskCustomDate(text);
+                      if (formError) setFormError(null);
+                    }}
                     placeholder="YYYY-MM-DD (e.g. 2026-09-26)"
                     placeholderTextColor="#636870"
                     style={[styles.input, { marginTop: 10 }]}
@@ -229,7 +302,10 @@ export function AddActionModal({ visible, onClose }: Props) {
                   {(['low', 'medium', 'high'] as TaskPriority[]).map((p) => (
                     <Pressable
                       key={p}
-                      onPress={() => setTaskPriority(p)}
+                      onPress={() => {
+                        setTaskPriority(p);
+                        if (formError) setFormError(null);
+                      }}
                       style={[styles.chip, taskPriority === p && styles.chipActive]}>
                       <Text style={[styles.chipText, taskPriority === p && styles.chipTextActive]}>
                         {p.toUpperCase()}
@@ -237,6 +313,8 @@ export function AddActionModal({ visible, onClose }: Props) {
                     </Pressable>
                   ))}
                 </View>
+
+                {formError && <Text style={styles.errorText}>{formError}</Text>}
 
                 <Pressable onPress={handleCreateTask} style={styles.submitButton}>
                   <Text style={styles.submitText}>Save Task</Text>
@@ -248,7 +326,10 @@ export function AddActionModal({ visible, onClose }: Props) {
                 <Text style={styles.label}>EVENT TITLE</Text>
                 <TextInput
                   value={eventTitle}
-                  onChangeText={setEventTitle}
+                  onChangeText={(text) => {
+                    setEventTitle(text);
+                    if (formError) setFormError(null);
+                  }}
                   placeholder="e.g. Dinner with Rahul"
                   placeholderTextColor="#636870"
                   style={styles.input}
@@ -257,21 +338,30 @@ export function AddActionModal({ visible, onClose }: Props) {
                 <Text style={[styles.label, { marginTop: 16 }]}>DATE</Text>
                 <View style={styles.chipRow}>
                   <Pressable
-                    onPress={() => setEventDateType('today')}
+                    onPress={() => {
+                      setEventDateType('today');
+                      if (formError) setFormError(null);
+                    }}
                     style={[styles.chip, eventDateType === 'today' && styles.chipActive]}>
                     <Text style={[styles.chipText, eventDateType === 'today' && styles.chipTextActive]}>
                       Today
                     </Text>
                   </Pressable>
                   <Pressable
-                    onPress={() => setEventDateType('tomorrow')}
+                    onPress={() => {
+                      setEventDateType('tomorrow');
+                      if (formError) setFormError(null);
+                    }}
                     style={[styles.chip, eventDateType === 'tomorrow' && styles.chipActive]}>
                     <Text style={[styles.chipText, eventDateType === 'tomorrow' && styles.chipTextActive]}>
                       Tomorrow
                     </Text>
                   </Pressable>
                   <Pressable
-                    onPress={() => setEventDateType('custom')}
+                    onPress={() => {
+                      setEventDateType('custom');
+                      if (formError) setFormError(null);
+                    }}
                     style={[styles.chip, eventDateType === 'custom' && styles.chipActive]}>
                     <Text style={[styles.chipText, eventDateType === 'custom' && styles.chipTextActive]}>
                       Custom
@@ -282,7 +372,10 @@ export function AddActionModal({ visible, onClose }: Props) {
                 {eventDateType === 'custom' && (
                   <TextInput
                     value={eventCustomDate}
-                    onChangeText={setEventCustomDate}
+                    onChangeText={(text) => {
+                      setEventCustomDate(text);
+                      if (formError) setFormError(null);
+                    }}
                     placeholder="YYYY-MM-DD (e.g. 2026-09-26)"
                     placeholderTextColor="#636870"
                     style={[styles.input, { marginTop: 10 }]}
@@ -294,7 +387,10 @@ export function AddActionModal({ visible, onClose }: Props) {
                     <Text style={styles.label}>START TIME</Text>
                     <TextInput
                       value={eventStartTime}
-                      onChangeText={setEventStartTime}
+                      onChangeText={(text) => {
+                        setEventStartTime(text);
+                        if (formError) setFormError(null);
+                      }}
                       placeholder="07:00 PM"
                       placeholderTextColor="#636870"
                       style={styles.input}
@@ -304,7 +400,10 @@ export function AddActionModal({ visible, onClose }: Props) {
                     <Text style={styles.label}>END TIME</Text>
                     <TextInput
                       value={eventEndTime}
-                      onChangeText={setEventEndTime}
+                      onChangeText={(text) => {
+                        setEventEndTime(text);
+                        if (formError) setFormError(null);
+                      }}
                       placeholder="09:00 PM"
                       placeholderTextColor="#636870"
                       style={styles.input}
@@ -320,6 +419,8 @@ export function AddActionModal({ visible, onClose }: Props) {
                   placeholderTextColor="#636870"
                   style={styles.input}
                 />
+
+                {formError && <Text style={styles.errorText}>{formError}</Text>}
 
                 <Pressable onPress={handleCreateEvent} style={styles.submitButton}>
                   <Text style={styles.submitText}>Save Fixed Event</Text>
@@ -441,12 +542,19 @@ const styles = StyleSheet.create({
     color: '#0B0D10',
     fontWeight: '700',
   },
+  errorText: {
+    color: '#FF9A9A',
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 12,
+    textAlign: 'center',
+  },
   submitButton: {
     backgroundColor: '#FFFFFF',
     borderRadius: 14,
     paddingVertical: 14,
     alignItems: 'center',
-    marginTop: 28,
+    marginTop: 20,
   },
   submitText: {
     color: '#0B0D10',
@@ -454,3 +562,4 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
+

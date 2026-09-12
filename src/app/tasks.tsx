@@ -10,8 +10,15 @@ import {
 } from 'react-native';
 
 import { TaskPriority, useTasks } from '@/contexts/tasks-context';
+import {
+  formatDisplayDate,
+  getDateString,
+  getTodayString,
+  isValidDateString,
+} from '@/lib/date-time';
 
 const priorities: TaskPriority[] = ['low', 'medium', 'high'];
+type DateType = 'anytime' | 'today' | 'tomorrow' | 'custom';
 
 export default function TasksScreen() {
   const { tasks, addTask, completeTask, deleteTask } = useTasks();
@@ -19,17 +26,22 @@ export default function TasksScreen() {
   const [title, setTitle] = useState('');
   const [duration, setDuration] = useState('');
   const [priority, setPriority] = useState<TaskPriority>('medium');
+  const [dateType, setDateType] = useState<DateType>('anytime');
+  const [customDate, setCustomDate] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const resetForm = () => {
     setTitle('');
     setDuration('');
     setPriority('medium');
+    setDateType('anytime');
+    setCustomDate('');
     setError(null);
     setIsFormVisible(false);
   };
 
   const handleAddTask = () => {
+    setError(null);
     const durationMinutes = Number(duration);
 
     if (!title.trim()) {
@@ -42,7 +54,21 @@ export default function TasksScreen() {
       return;
     }
 
-    addTask({ title: title.trim(), durationMinutes, priority });
+    let finalDate: string | null = null;
+    if (dateType === 'today') {
+      finalDate = getTodayString();
+    } else if (dateType === 'tomorrow') {
+      finalDate = getDateString(1);
+    } else if (dateType === 'custom') {
+      const trimmed = customDate.trim();
+      if (!trimmed || !isValidDateString(trimmed)) {
+        setError('Enter a valid date in YYYY-MM-DD format (e.g. 2026-09-26).');
+        return;
+      }
+      finalDate = trimmed;
+    }
+
+    addTask({ title: title.trim(), durationMinutes, priority, date: finalDate });
     resetForm();
   };
 
@@ -69,7 +95,10 @@ export default function TasksScreen() {
             <Text style={styles.formTitle}>New task</Text>
             <TextInput
               value={title}
-              onChangeText={setTitle}
+              onChangeText={(text) => {
+                setTitle(text);
+                if (error) setError(null);
+              }}
               placeholder="Task title"
               placeholderTextColor="#737983"
               style={styles.input}
@@ -77,20 +106,56 @@ export default function TasksScreen() {
             />
             <TextInput
               value={duration}
-              onChangeText={setDuration}
+              onChangeText={(text) => {
+                setDuration(text);
+                if (error) setError(null);
+              }}
               placeholder="Duration in minutes"
               placeholderTextColor="#737983"
               keyboardType="number-pad"
               style={styles.input}
             />
 
-            <Text style={styles.priorityLabel}>Priority</Text>
+            <Text style={styles.fieldLabel}>Date</Text>
+            <View style={styles.chipRow}>
+              {(['anytime', 'today', 'tomorrow', 'custom'] as DateType[]).map((type) => (
+                <Pressable
+                  key={type}
+                  style={[styles.chip, dateType === type && styles.chipSelected]}
+                  onPress={() => {
+                    setDateType(type);
+                    if (error) setError(null);
+                  }}>
+                  <Text style={[styles.chipText, dateType === type && styles.chipTextSelected]}>
+                    {type.charAt(0).toUpperCase() + type.slice(1)}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {dateType === 'custom' && (
+              <TextInput
+                value={customDate}
+                onChangeText={(text) => {
+                  setCustomDate(text);
+                  if (error) setError(null);
+                }}
+                placeholder="YYYY-MM-DD (e.g. 2026-09-26)"
+                placeholderTextColor="#737983"
+                style={[styles.input, { marginTop: 8 }]}
+              />
+            )}
+
+            <Text style={styles.fieldLabel}>Priority</Text>
             <View style={styles.priorityRow}>
               {priorities.map((value) => (
                 <Pressable
                   key={value}
                   style={[styles.priorityButton, priority === value && styles.priorityButtonSelected]}
-                  onPress={() => setPriority(value)}>
+                  onPress={() => {
+                    setPriority(value);
+                    if (error) setError(null);
+                  }}>
                   <Text style={[styles.priorityText, priority === value && styles.priorityTextSelected]}>
                     {value.charAt(0).toUpperCase() + value.slice(1)}
                   </Text>
@@ -120,7 +185,7 @@ export default function TasksScreen() {
                 {task.title}
               </Text>
               <Text style={styles.taskMeta}>
-                {task.durationMinutes} min · {task.priority} priority · {task.status}
+                {task.durationMinutes} min · {task.priority} priority · {task.date ? formatDisplayDate(task.date) : 'Anytime'} · {task.status}
               </Text>
             </View>
 
@@ -165,12 +230,17 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     marginBottom: 10,
   },
-  priorityLabel: { color: '#9A9EA6', fontSize: 13, fontWeight: '600', marginTop: 4, marginBottom: 8 },
+  fieldLabel: { color: '#9A9EA6', fontSize: 13, fontWeight: '600', marginTop: 4, marginBottom: 8 },
+  chipRow: { flexDirection: 'row', gap: 8, marginBottom: 10, flexWrap: 'wrap' },
+  chip: { backgroundColor: '#252932', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 },
+  chipSelected: { backgroundColor: '#A7A0FF' },
+  chipText: { color: '#D2D5DA', fontSize: 13, fontWeight: '600' },
+  chipTextSelected: { color: '#171A20', fontWeight: '700' },
   priorityRow: { flexDirection: 'row', gap: 8 },
   priorityButton: { backgroundColor: '#252932', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10 },
   priorityButtonSelected: { backgroundColor: '#A7A0FF' },
   priorityText: { color: '#D2D5DA', fontSize: 13, fontWeight: '600' },
-  priorityTextSelected: { color: '#171A20' },
+  priorityTextSelected: { color: '#171A20', fontWeight: '700' },
   error: { color: '#FF9A9A', fontSize: 13, marginTop: 12 },
   formActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 18 },
   cancelButton: { paddingHorizontal: 14, paddingVertical: 11 },
@@ -197,3 +267,4 @@ const styles = StyleSheet.create({
   deleteButton: { paddingHorizontal: 5, paddingVertical: 3 },
   deleteButtonText: { color: '#FF9A9A', fontSize: 12, fontWeight: '600' },
 });
+

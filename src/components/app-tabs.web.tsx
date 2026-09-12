@@ -27,6 +27,12 @@ export default function AppTabs() {
           <TabTrigger name="tasks" href="/tasks" asChild>
             <TabButton>Tasks</TabButton>
           </TabTrigger>
+          <TabTrigger name="calendar" href="/calendar" asChild>
+            <TabButton>Calendar</TabButton>
+          </TabTrigger>
+          <TabTrigger name="chat" href="/chat" asChild>
+            <TabButton>Chat</TabButton>
+          </TabTrigger>
         </CustomTabList>
       </TabList>
     </Tabs>
@@ -55,7 +61,7 @@ export function CustomTabList(props: TabListProps) {
     <View {...props} style={styles.tabListContainer}>
       <ThemedView type="backgroundElement" style={styles.innerContainer}>
         <ThemedText type="smallBold" style={styles.brandText}>
-          Expo Starter
+          Life OS
         </ThemedText>
 
         {props.children}
@@ -113,3 +119,4 @@ const styles = StyleSheet.create({
     marginLeft: Spacing.three,
   },
 });
+
