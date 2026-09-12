@@ -149,7 +149,90 @@ export function parseIntent(userMessage: string): ParseIntentResult {
     };
   }
 
-  // 4. Complete task patterns
+  // 4. Update task patterns
+  // A. Anytime / Remove date
+  const anytimeMatch =
+    normalized.match(/^(?:make|set|change)\s+(.+?)\s+(?:an\s+)?anytime\s*(?:task)?$/i) ||
+    normalized.match(/^(?:remove|clear)\s+(?:the\s+)?date\s+(?:from|for)\s+(.+)$/i) ||
+    normalized.match(/^undate\s+(.+)$/i);
+
+  if (anytimeMatch && anytimeMatch[1]?.trim()) {
+    return {
+      success: true,
+      actions: [
+        {
+          type: 'update_task',
+          payload: {
+            taskTitleQuery: anytimeMatch[1].trim(),
+            date: null,
+          },
+        },
+      ],
+    };
+  }
+
+  // B. Priority update
+  const priorityMatch =
+    normalized.match(/^(?:make|set|change|update)\s+(.+?)\s+(high|medium|low)\s+priority$/i) ||
+    normalized.match(/^(?:change|set|update)\s+(.+?)\s+priority\s+to\s+(high|medium|low)$/i);
+
+  if (priorityMatch) {
+    const taskTitleQuery = priorityMatch[1].trim();
+    const priority = priorityMatch[2].toLowerCase() as TaskPriority;
+    return {
+      success: true,
+      actions: [
+        {
+          type: 'update_task',
+          payload: { taskTitleQuery, priority },
+        },
+      ],
+    };
+  }
+
+  // C. Duration update
+  const durationMatch =
+    normalized.match(/^(?:change|set|update)\s+(.+?)\s+(?:duration\s+)?to\s+(\d+(?:\.\d+)?\s*(?:hours|hour|hrs|hr|h|minutes|minute|mins|min|m))$/i);
+
+  if (durationMatch) {
+    const taskTitleQuery = durationMatch[1].trim();
+    const durationMinutes = parseDurationMinutes(durationMatch[2]);
+    if (durationMinutes !== null) {
+      return {
+        success: true,
+        actions: [
+          {
+            type: 'update_task',
+            payload: { taskTitleQuery, durationMinutes },
+          },
+        ],
+      };
+    }
+  }
+
+  // D. Date update / Move / Reschedule
+  const moveMatch =
+    normalized.match(/^(?:move|reschedule|shift|postpone)\s+(.+?)\s+to\s+(.+)$/i) ||
+    normalized.match(/^(?:change|update|set)\s+(.+?)\s+(?:date\s+)?to\s+(.+)$/i);
+
+  if (moveMatch) {
+    const taskTitleQuery = moveMatch[1].trim();
+    const datePhrase = moveMatch[2].trim();
+    const dateResult = parseNaturalDateString(datePhrase);
+    if (dateResult.date !== null) {
+      return {
+        success: true,
+        actions: [
+          {
+            type: 'update_task',
+            payload: { taskTitleQuery, date: dateResult.date },
+          },
+        ],
+      };
+    }
+  }
+
+  // 5. Complete task patterns
   const completeRegexes = [
     /^(?:i\s+have\s+|i\s+)?(?:complete|completed|finish|finished)\s+(.+)$/,
     /^mark\s+(.+?)\s+(?:as\s+)?(?:complete|completed|done|finished)$/,

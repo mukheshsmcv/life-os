@@ -117,6 +117,13 @@ function executeAction(action, context) {
       context.operations.deleteTask(action.payload.taskId);
       return { success: true, message: `✓ Removed ${targetTask?.title || 'Task'} from your plan.` };
     }
+    case 'update_task': {
+      const targetTask = context.tasks.find((t) => t.id === action.payload.taskId);
+      if (context.operations.updateTask) {
+        context.operations.updateTask(action.payload.taskId, action.payload);
+      }
+      return { success: true, message: `✓ Updated "${targetTask?.title || 'Task'}".` };
+    }
     case 'get_schedule':
       return { success: true, message: 'Here is your current schedule for today:\n• 6:00 PM — 7:00 PM: Study Pharmacology (60m)' };
     case 'replan_day':
@@ -528,6 +535,86 @@ function parseIntent(userMessage) {
     }
   }
 
+  // Update task patterns
+  const anytimeMatch =
+    normalized.match(/^(?:make|set|change)\s+(.+?)\s+(?:an\s+)?anytime\s*(?:task)?$/i) ||
+    normalized.match(/^(?:remove|clear)\s+(?:the\s+)?date\s+(?:from|for)\s+(.+)$/i) ||
+    normalized.match(/^undate\s+(.+)$/i);
+
+  if (anytimeMatch && anytimeMatch[1]?.trim()) {
+    return {
+      success: true,
+      actions: [
+        {
+          type: 'update_task',
+          payload: {
+            taskTitleQuery: anytimeMatch[1].trim(),
+            date: null,
+          },
+        },
+      ],
+    };
+  }
+
+  const priorityMatch =
+    normalized.match(/^(?:make|set|change|update)\s+(.+?)\s+(high|medium|low)\s+priority$/i) ||
+    normalized.match(/^(?:change|set|update)\s+(.+?)\s+priority\s+to\s+(high|medium|low)$/i);
+
+  if (priorityMatch) {
+    const taskTitleQuery = priorityMatch[1].trim();
+    const priority = priorityMatch[2].toLowerCase();
+    return {
+      success: true,
+      actions: [
+        {
+          type: 'update_task',
+          payload: { taskTitleQuery, priority },
+        },
+      ],
+    };
+  }
+
+  const hoursMatch = normalized.match(/(\d+(?:\.\d+)?)\s*(?:hours|hour|hrs|hr|h\b)/i);
+  const minsMatch = normalized.match(/(\d+)\s*(?:minutes|minute|mins|min|m\b)/i);
+  const parsedDur = hoursMatch ? Math.round(parseFloat(hoursMatch[1]) * 60) : (minsMatch ? parseInt(minsMatch[1], 10) : null);
+
+  const durationMatch =
+    normalized.match(/^(?:change|set|update)\s+(.+?)\s+(?:duration\s+)?to\s+(\d+(?:\.\d+)?\s*(?:hours|hour|hrs|hr|h|minutes|minute|mins|min|m))$/i);
+
+  if (durationMatch && parsedDur !== null) {
+    const taskTitleQuery = durationMatch[1].trim();
+    return {
+      success: true,
+      actions: [
+        {
+          type: 'update_task',
+          payload: { taskTitleQuery, durationMinutes: parsedDur },
+        },
+      ],
+    };
+  }
+
+  const moveMatch =
+    normalized.match(/^(?:move|reschedule|shift|postpone)\s+(.+?)\s+to\s+(.+)$/i) ||
+    normalized.match(/^(?:change|update|set)\s+(.+?)\s+(?:date\s+)?to\s+(.+)$/i);
+
+  if (moveMatch) {
+    const taskTitleQuery = moveMatch[1].trim();
+    const datePhrase = moveMatch[2].trim();
+    const dateResult = parseNaturalDateString(datePhrase);
+    if (dateResult.date !== null) {
+      return {
+        success: true,
+        actions: [
+          {
+            type: 'update_task',
+            payload: { taskTitleQuery, date: dateResult.date },
+          },
+        ],
+      };
+    }
+  }
+
   const createPrefixes = [
     /^(?:add|create)\s+(?:task\s+)?(.+)$/i,
     /^(?:i\s+need\s+to|need\s+to|remind\s+me\s+to|i\s+have\s+to|have\s+to|must|i\s+want\s+to|want\s+to)\s+(.+)$/i,
@@ -646,6 +733,40 @@ assert(fbAbs.success && fbAbs.actions[0].payload.date === '2026-09-26', '13. Gem
 // 14. Gemini 429 + unsupported date expression → safe clarification, not incorrect task
 const fbUnsup = parseIntent("Add anatomy next week");
 assert(!fbUnsup.success && fbUnsup.error.includes('Date-aware AI parsing is temporarily unavailable'), '14. Gemini 429 fallback returns clarification error for unsupported expression "next week"');
+
+// 15. Update task: Move pathology to tomorrow (intent + validation + execution)
+const u1Intent = parseIntent("Move pharmacology to tomorrow");
+assert(u1Intent.success && u1Intent.actions[0].type === 'update_task', '15a. Move pharmacology to tomorrow parses update_task intent');
+const u1Val = validateAction(u1Intent.actions[0], sampleTasks);
+assert(u1Val.valid && u1Val.resolvedTaskId === 'study-pharmacology', '15b. Move pharmacology to tomorrow resolves task ID');
+
+// 16. Update task: Change anatomy to 2 hours
+const u2Intent = parseIntent("Change anatomy to 2 hours");
+assert(u2Intent.success && u2Intent.actions[0].payload.durationMinutes === 120, '16. Change anatomy to 2 hours sets durationMinutes=120');
+
+// 17. Update task: Make pharmacology high priority
+const u3Intent = parseIntent("Make pharmacology high priority");
+assert(u3Intent.success && u3Intent.actions[0].payload.priority === 'high', '17. Make pharmacology high priority sets priority=high');
+
+// 18. Update task: Make anatomy an anytime task (date removal)
+const u4Intent = parseIntent("Make anatomy an anytime task");
+assert(u4Intent.success && u4Intent.actions[0].payload.date === null, '18. Make anatomy an anytime task sets date=null');
+
+// 19. Update task: Remove the date from pathology
+const u5Intent = parseIntent("Remove the date from pathology");
+assert(u5Intent.success && u5Intent.actions[0].payload.date === null, '19. Remove the date from pathology sets date=null');
+
+// 20. Update task: Ambiguous task match returns clarification error
+const ambTasks = [
+  { id: 'm1', title: 'Morning Medicine', durationMinutes: 10, priority: 'high', status: 'pending', date: null },
+  { id: 'm2', title: 'Evening Medicine', durationMinutes: 10, priority: 'high', status: 'pending', date: null },
+];
+const ambVal = validateAction({ type: 'update_task', payload: { taskTitleQuery: 'Medicine', date: tomorrowStr } }, ambTasks);
+assert(!ambVal.valid && ambVal.clarificationNeeded, '20. Ambiguous task update request returns clarification error');
+
+// 21. Update task: Non-existent task fails validation cleanly
+const unkVal = validateAction({ type: 'update_task', payload: { taskTitleQuery: 'Astronomy', date: tomorrowStr } }, sampleTasks);
+assert(!unkVal.valid && unkVal.error.includes('couldn\'t find any task'), '21. Non-existent task update returns helpful error');
 
 // ─── Summary ──────────────────────────────────────────────────────────────────
 

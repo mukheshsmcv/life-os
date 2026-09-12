@@ -253,6 +253,85 @@ function parseIntent(userMessage) {
     return { success: true, actions: [{ type: 'replan_day' }] };
   }
 
+  // Update task patterns
+  const anytimeMatch =
+    normalized.match(/^(?:make|set|change)\s+(.+?)\s+(?:an\s+)?anytime\s*(?:task)?$/i) ||
+    normalized.match(/^(?:remove|clear)\s+(?:the\s+)?date\s+(?:from|for)\s+(.+)$/i) ||
+    normalized.match(/^undate\s+(.+)$/i);
+
+  if (anytimeMatch && anytimeMatch[1]?.trim()) {
+    return {
+      success: true,
+      actions: [
+        {
+          type: 'update_task',
+          payload: {
+            taskTitleQuery: anytimeMatch[1].trim(),
+            date: null,
+          },
+        },
+      ],
+    };
+  }
+
+  const priorityMatch =
+    normalized.match(/^(?:make|set|change|update)\s+(.+?)\s+(high|medium|low)\s+priority$/i) ||
+    normalized.match(/^(?:change|set|update)\s+(.+?)\s+priority\s+to\s+(high|medium|low)$/i);
+
+  if (priorityMatch) {
+    const taskTitleQuery = priorityMatch[1].trim();
+    const priority = priorityMatch[2].toLowerCase();
+    return {
+      success: true,
+      actions: [
+        {
+          type: 'update_task',
+          payload: { taskTitleQuery, priority },
+        },
+      ],
+    };
+  }
+
+  const durationMatch =
+    normalized.match(/^(?:change|set|update)\s+(.+?)\s+(?:duration\s+)?to\s+(\d+(?:\.\d+)?\s*(?:hours|hour|hrs|hr|h|minutes|minute|mins|min|m))$/i);
+
+  if (durationMatch) {
+    const taskTitleQuery = durationMatch[1].trim();
+    const durationMinutes = parseDurationMinutes(durationMatch[2]);
+    if (durationMinutes !== null) {
+      return {
+        success: true,
+        actions: [
+          {
+            type: 'update_task',
+            payload: { taskTitleQuery, durationMinutes },
+          },
+        ],
+      };
+    }
+  }
+
+  const moveMatch =
+    normalized.match(/^(?:move|reschedule|shift|postpone)\s+(.+?)\s+to\s+(.+)$/i) ||
+    normalized.match(/^(?:change|update|set)\s+(.+?)\s+(?:date\s+)?to\s+(.+)$/i);
+
+  if (moveMatch) {
+    const taskTitleQuery = moveMatch[1].trim();
+    const datePhrase = moveMatch[2].trim();
+    const dateResult = parseNaturalDateString(datePhrase);
+    if (dateResult.date !== null) {
+      return {
+        success: true,
+        actions: [
+          {
+            type: 'update_task',
+            payload: { taskTitleQuery, date: dateResult.date },
+          },
+        ],
+      };
+    }
+  }
+
   const completeRegexes = [
     /^(?:i\s+have\s+|i\s+)?(?:complete|completed|finish|finished)\s+(.+)$/,
     /^mark\s+(.+?)\s+(?:as\s+)?(?:complete|completed|done|finished)$/,
@@ -386,7 +465,49 @@ const tests = [
     checkIntent: (res) => res.success && res.actions[0].payload.title === 'Study anatomy' && res.actions[0].payload.date.endsWith('-09-26'),
   },
 
-  // 3. Conversational Safety Tests (Must NOT create tasks)
+  // 3. Update Task Tests
+  {
+    label: 'Update: Move pathology to tomorrow',
+    input: 'Move pathology to tomorrow',
+    checkIntent: (res) => res.success && res.actions[0].type === 'update_task' && res.actions[0].payload.taskTitleQuery === 'pathology' && res.actions[0].payload.date === getDateString(1),
+  },
+  {
+    label: 'Update: Move anatomy to September 26',
+    input: 'Move anatomy to September 26',
+    checkIntent: (res) => res.success && res.actions[0].type === 'update_task' && res.actions[0].payload.taskTitleQuery === 'anatomy' && res.actions[0].payload.date.endsWith('-09-26'),
+  },
+  {
+    label: 'Update: Change anatomy to 2 hours',
+    input: 'Change anatomy to 2 hours',
+    checkIntent: (res) => res.success && res.actions[0].type === 'update_task' && res.actions[0].payload.taskTitleQuery === 'anatomy' && res.actions[0].payload.durationMinutes === 120,
+  },
+  {
+    label: 'Update: Make pharmacology high priority',
+    input: 'Make pharmacology high priority',
+    checkIntent: (res) => res.success && res.actions[0].type === 'update_task' && res.actions[0].payload.taskTitleQuery === 'pharmacology' && res.actions[0].payload.priority === 'high',
+  },
+  {
+    label: 'Update: Change pathology to Monday',
+    input: 'Change pathology to Monday',
+    checkIntent: (res) => res.success && res.actions[0].type === 'update_task' && res.actions[0].payload.taskTitleQuery === 'pathology' && res.actions[0].payload.date === getExpectedWeekdayDate(1, 'plain'),
+  },
+  {
+    label: 'Update: Reschedule surgery to next Friday',
+    input: 'Reschedule surgery to next Friday',
+    checkIntent: (res) => res.success && res.actions[0].type === 'update_task' && res.actions[0].payload.taskTitleQuery === 'surgery' && res.actions[0].payload.date === getExpectedWeekdayDate(5, 'next'),
+  },
+  {
+    label: 'Update: Make anatomy an anytime task',
+    input: 'Make anatomy an anytime task',
+    checkIntent: (res) => res.success && res.actions[0].type === 'update_task' && res.actions[0].payload.taskTitleQuery === 'anatomy' && res.actions[0].payload.date === null,
+  },
+  {
+    label: 'Update: Remove the date from pathology',
+    input: 'Remove the date from pathology',
+    checkIntent: (res) => res.success && res.actions[0].type === 'update_task' && res.actions[0].payload.taskTitleQuery === 'pathology' && res.actions[0].payload.date === null,
+  },
+
+  // 4. Conversational Safety Tests (Must NOT create/update tasks)
   {
     label: 'Safety: I studied anatomy yesterday',
     input: 'I studied anatomy yesterday',
@@ -412,8 +533,13 @@ const tests = [
     input: 'Should I study anatomy tomorrow?',
     checkIntent: (res) => !res.success,
   },
+  {
+    label: 'Safety: I studied pathology for 2 hours.',
+    input: 'I studied pathology for 2 hours.',
+    checkIntent: (res) => !res.success,
+  },
 
-  // 4. Positive Task Creation Tests (MUST create tasks)
+  // 5. Positive Task Creation Tests (MUST create tasks)
   {
     label: 'Positive: I need to study anatomy tomorrow',
     input: 'I need to study anatomy tomorrow',
@@ -435,7 +561,7 @@ const tests = [
     checkIntent: (res) => res.success && res.actions[0].payload.title === 'Anatomy' && res.actions[0].payload.date.endsWith('-09-26'),
   },
 
-  // 5. Existing Core Intent Tests
+  // 6. Existing Core Intent Tests
   { label: 'Intent: complete pharmacology', input: 'complete pharmacology', checkIntent: (res) => res.success && res.actions[0].type === 'complete_task' },
   { label: 'Intent: skip gym', input: 'skip gym', checkIntent: (res) => res.success && res.actions[0].type === 'skip_task' },
   { label: 'Intent: delete study', input: 'delete study', checkIntent: (res) => res.success && res.actions[0].type === 'delete_task' },

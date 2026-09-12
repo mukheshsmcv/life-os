@@ -45,6 +45,28 @@ export function validateAction(action: AIAction, tasks: Task[]): ValidationResul
     case 'skip_task':
     case 'delete_task':
     case 'update_task': {
+      if (action.type === 'update_task') {
+        const { date, durationMinutes, priority } = action.payload;
+        if (date !== undefined && date !== null && !isValidDateString(date)) {
+          return {
+            valid: false,
+            error: `Invalid date "${date}". Date must be in YYYY-MM-DD format (or null for anytime).`,
+          };
+        }
+        if (durationMinutes !== undefined && (!Number.isFinite(durationMinutes) || durationMinutes <= 0)) {
+          return {
+            valid: false,
+            error: 'Task duration must be a valid number of minutes greater than 0.',
+          };
+        }
+        if (priority !== undefined && !['low', 'medium', 'high'].includes(priority)) {
+          return {
+            valid: false,
+            error: `Invalid priority '${priority}'. Priority must be low, medium, or high.`,
+          };
+        }
+      }
+
       const { taskId, taskTitleQuery } = action.payload;
 
       // If taskId is directly provided

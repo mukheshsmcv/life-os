@@ -48,6 +48,7 @@ type TasksContextValue = {
   tasks: Task[];
   events: Event[];
   addTask: (task: NewTask) => void;
+  updateTask: (id: string, updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date'>>) => void;
   addEvent: (event: NewEvent) => void;
   completeTask: (id: string) => void;
   skipTask: (id: string) => void;
@@ -124,6 +125,15 @@ export function TasksProvider({ children }: PropsWithChildren) {
     );
   };
 
+  const updateTask = (
+    id: string,
+    updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date'>>
+  ) => {
+    setTasks((currentTasks) =>
+      currentTasks.map((task) => (task.id === id ? { ...task, ...updates } : task))
+    );
+  };
+
   const addTask = ({ title, durationMinutes, priority, date }: NewTask) => {
     setTasks((currentTasks) => [
       ...currentTasks,
@@ -169,6 +179,7 @@ export function TasksProvider({ children }: PropsWithChildren) {
     tasks,
     events,
     addTask,
+    updateTask,
     addEvent,
     completeTask: (id: string) => updateTaskStatus(id, 'completed'),
     skipTask: (id: string) => updateTaskStatus(id, 'skipped'),

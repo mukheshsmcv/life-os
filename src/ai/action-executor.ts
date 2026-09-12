@@ -9,6 +9,7 @@ import { AIAction, ExecutionResult } from './ai-types';
 
 export type TaskOperations = {
   addTask: (task: { title: string; durationMinutes: number; priority: TaskPriority; date?: string | null }) => void;
+  updateTask?: (id: string, updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date'>>) => void;
   completeTask: (id: string) => void;
   skipTask: (id: string) => void;
   deleteTask: (id: string) => void;
@@ -146,6 +147,40 @@ export function executeAction(
       return {
         success: true,
         message: `✓ Removed ${targetTask?.title ?? 'Task'} from your plan.${nextMsg}`,
+      };
+    }
+
+    case 'update_task': {
+      const { taskId, title, durationMinutes, priority, date } = action.payload;
+      if (!taskId) {
+        return { success: false, message: 'Missing task ID for update.' };
+      }
+      const targetTask = context.tasks.find((t) => t.id === taskId);
+      if (!targetTask) {
+        return { success: false, message: `Task with ID '${taskId}' does not exist.` };
+      }
+
+      const updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date'>> = {};
+      if (title !== undefined) updates.title = title;
+      if (durationMinutes !== undefined) updates.durationMinutes = durationMinutes;
+      if (priority !== undefined) updates.priority = priority;
+      if (date !== undefined) updates.date = date;
+
+      if (context.operations.updateTask) {
+        context.operations.updateTask(taskId, updates);
+      }
+
+      const details: string[] = [];
+      if (title !== undefined) details.push(`title: "${title}"`);
+      if (durationMinutes !== undefined) details.push(`duration: ${durationMinutes}m`);
+      if (priority !== undefined) details.push(`priority: ${priority}`);
+      if (date !== undefined) details.push(date === null ? 'date: anytime (undated)' : `date: ${formatDisplayDate(date)}`);
+
+      const changesMsg = details.length > 0 ? ` (${details.join(', ')})` : '';
+
+      return {
+        success: true,
+        message: `✓ Updated "${targetTask.title}"${changesMsg}.`,
       };
     }
 
