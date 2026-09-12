@@ -1,0 +1,292 @@
+/**
+ * date-time.ts
+ *
+ * Pure date/time utility for Life OS.
+ * Timezone: Asia/Kolkata (UTC+05:30).
+ *
+ * Design rules:
+ *  - Never rely on toLocaleDateString / toLocaleTimeString with implicit locale,
+ *    because behaviour varies across JS engines.
+ *  - All "today" calculations use an explicit +05:30 offset so that a device
+ *    near UTC midnight never returns the wrong calendar day.
+ *  - No third-party dependencies.
+ *  - No React imports — this module is framework-independent.
+ */
+
+/** IST offset from UTC in milliseconds: +05:30 = 5.5 * 3600 * 1000 */
+const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+
+/**
+ * Returns the current IST wall-clock moment as a Date whose local
+ * getFullYear() / getMonth() / getDate() values represent IST components.
+ *
+ * Implementation: shift the UTC epoch value by +05:30 so that ordinary
+ * getDate/getMonth/getFullYear calls return IST values, regardless of the
+ * device's system timezone.
+ */
+function nowInIST(): Date {
+  const utcMs = Date.now();
+  return new Date(utcMs + IST_OFFSET_MS);
+}
+
+/**
+ * Returns today's date in YYYY-MM-DD format (IST).
+ */
+export function getTodayString(): string {
+  const d = nowInIST();
+  return toYMD(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+}
+
+/**
+ * Returns today ± offsetDays as YYYY-MM-DD (IST).
+ * e.g. getDateString(1) = tomorrow, getDateString(-1) = yesterday.
+ */
+export function getDateString(offsetDays: number): string {
+  const utcMs = Date.now() + IST_OFFSET_MS;
+  const shifted = new Date(utcMs + offsetDays * 86400_000);
+  return toYMD(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, shifted.getUTCDate());
+}
+
+/**
+ * Parses a YYYY-MM-DD string and returns a Date representing local midnight
+ * in IST (i.e. 00:00 IST = 18:30 previous UTC day).
+ *
+ * This is useful when you need to compare a task date to a real Date object.
+ */
+export function parseDateString(dateStr: string): Date {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  // Midnight IST = UTC - 5h30m  (UTC midnight on that date + 00:00 IST)
+  const utcMs = Date.UTC(year, month - 1, day) - IST_OFFSET_MS;
+  return new Date(utcMs);
+}
+
+/**
+ * Strict YYYY-MM-DD format + calendar validity check.
+ * Rejects impossible dates like 2026-02-31 or 2026-13-01.
+ */
+export function isValidDateString(value: string): boolean {
+  if (typeof value !== 'string') return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+
+  const [yearStr, monthStr, dayStr] = value.split('-');
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+
+  if (month < 1 || month > 12) return false;
+  if (day < 1) return false;
+
+  // Use Date to check day-in-month validity (catches Feb 31, Apr 31, etc.)
+  const check = new Date(Date.UTC(year, month - 1, day));
+  return (
+    check.getUTCFullYear() === year &&
+    check.getUTCMonth() + 1 === month &&
+    check.getUTCDate() === day
+  );
+}
+
+/**
+ * Returns a human-readable label for a YYYY-MM-DD date string:
+ *   - "Today"
+ *   - "Tomorrow"
+ *   - "Mon Sep 15"  (for other dates)
+ *
+ * Always uses IST for "today" comparison.
+ */
+export function formatDisplayDate(dateStr: string): string {
+  const today = getTodayString();
+  const tomorrow = getDateString(1);
+
+  if (dateStr === today) return 'Today';
+  if (dateStr === tomorrow) return 'Tomorrow';
+
+  const [year, month, day] = dateStr.split('-').map(Number);
+  // Build a UTC-based date just for day-of-week / month name lookup
+  const d = new Date(Date.UTC(year, month - 1, day));
+
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  return `${dayNames[d.getUTCDay()]} ${monthNames[d.getUTCMonth()]} ${d.getUTCDate()}`;
+}
+
+/**
+ * Returns the current IST time as a "HH:MM AM/PM" string.
+ * Used when building context for the AI server.
+ */
+/**
+ * Returns the current IST time as a "HH:MM AM/PM" string.
+ * Used when building context for the AI server.
+ */
+export function getCurrentTimeStringIST(): string {
+  const d = nowInIST();
+  const hours = d.getUTCHours();
+  const mins = String(d.getUTCMinutes()).padStart(2, '0');
+  const period = hours >= 12 ? 'PM' : 'AM';
+  const display = hours % 12 || 12;
+  return `${display}:${mins} ${period}`;
+}
+
+/**
+ * Parses natural language date expressions and returns a YYYY-MM-DD string (IST) if recognized.
+ * Supports:
+ *  - Explicit YYYY-MM-DD
+ *  - "26th September", "26 September", "September 26", "Sep 26", "Sep 26th"
+ *  - "26/09", "26-09", "26/09/2026"
+ *  - "today", "tonight"
+ *  - "tomorrow"
+ *  - "day after tomorrow"
+ *  - "Monday" .. "Sunday", "next Monday", "this Monday"
+ *
+ * Uses pure IST date arithmetic without reliance on JS Date local parsing.
+ */
+export function parseNaturalDateString(inputStr: string): { date: string | null; matchedPhrase?: string } {
+  if (!inputStr || typeof inputStr !== 'string') return { date: null };
+  const lower = inputStr.toLowerCase().trim();
+
+  // 1. Explicit YYYY-MM-DD
+  const ymdMatch = lower.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  if (ymdMatch && isValidDateString(ymdMatch[1])) {
+    return { date: ymdMatch[1], matchedPhrase: ymdMatch[1] };
+  }
+
+  // 2. Relative day: "day after tomorrow"
+  if (/\b(?:the\s+)?day\s+after\s+tomorrow\b/i.test(lower)) {
+    const matched = lower.match(/\b(?:the\s+)?day\s+after\s+tomorrow\b/i)![0];
+    return { date: getDateString(2), matchedPhrase: matched };
+  }
+
+  // 3. Relative day: "tomorrow"
+  if (/\btomorrow\b/i.test(lower)) {
+    const matched = lower.match(/\btomorrow\b/i)![0];
+    return { date: getDateString(1), matchedPhrase: matched };
+  }
+
+  // 4. Relative day: "today" / "tonight"
+  if (/\b(?:today|tonight)\b/i.test(lower)) {
+    const matched = lower.match(/\b(?:today|tonight)\b/i)![0];
+    return { date: getTodayString(), matchedPhrase: matched };
+  }
+
+  // 5. Month name + Day number (e.g., "26th September", "26 September", "September 26", "Sep 26", "Sep 26th")
+  const monthsRegexStr = '(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
+  const dayRegexStr = '(\\d{1,2})(?:st|nd|rd|th)?';
+
+  const monthMap: Record<string, number> = {
+    jan: 1, january: 1,
+    feb: 2, february: 2,
+    mar: 3, march: 3,
+    apr: 4, april: 4,
+    may: 5,
+    jun: 6, june: 6,
+    jul: 7, july: 7,
+    aug: 8, august: 8,
+    sep: 9, sept: 9, september: 9,
+    oct: 10, october: 10,
+    nov: 11, november: 11,
+    dec: 12, december: 12,
+  };
+
+  // Pattern A: "26th September" / "26 Sep"
+  const patternA = new RegExp(`\\b${dayRegexStr}\\s+${monthsRegexStr}\\b`, 'i');
+  const matchA = lower.match(patternA);
+  if (matchA) {
+    const day = parseInt(matchA[1], 10);
+    const monthKey = matchA[2].toLowerCase();
+    const month = monthMap[monthKey];
+    if (month && day >= 1 && day <= 31) {
+      const todayStr = getTodayString();
+      const [currY, currM, currD] = todayStr.split('-').map(Number);
+      let year = currY;
+      if (month < currM || (month === currM && day < currD)) {
+        year = currY + 1;
+      }
+      const candidate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      if (isValidDateString(candidate)) {
+        return { date: candidate, matchedPhrase: matchA[0] };
+      }
+    }
+  }
+
+  // Pattern B: "September 26" / "Sep 26th"
+  const patternB = new RegExp(`\\b${monthsRegexStr}\\s+${dayRegexStr}\\b`, 'i');
+  const matchB = lower.match(patternB);
+  if (matchB) {
+    const monthKey = matchB[1].toLowerCase();
+    const day = parseInt(matchB[2], 10);
+    const month = monthMap[monthKey];
+    if (month && day >= 1 && day <= 31) {
+      const todayStr = getTodayString();
+      const [currY, currM, currD] = todayStr.split('-').map(Number);
+      let year = currY;
+      if (month < currM || (month === currM && day < currD)) {
+        year = currY + 1;
+      }
+      const candidate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      if (isValidDateString(candidate)) {
+        return { date: candidate, matchedPhrase: matchB[0] };
+      }
+    }
+  }
+
+  // 6. Numeric slash/dash date: "26/09", "26-09", "26/09/2026"
+  const numericMatch = lower.match(/\b(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{4}|\d{2}))?\b/);
+  if (numericMatch) {
+    const day = parseInt(numericMatch[1], 10);
+    const month = parseInt(numericMatch[2], 10);
+    let year = numericMatch[3] ? parseInt(numericMatch[3], 10) : undefined;
+    if (year !== undefined && year < 100) year += 2000;
+
+    const todayStr = getTodayString();
+    const [currY, currM, currD] = todayStr.split('-').map(Number);
+    if (!year) {
+      year = currY;
+      if (month < currM || (month === currM && day < currD)) {
+        year = currY + 1;
+      }
+    }
+
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const candidate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      if (isValidDateString(candidate)) {
+        return { date: candidate, matchedPhrase: numericMatch[0] };
+      }
+    }
+  }
+
+  // 7. Weekdays ("Monday", "next Monday", "this Monday")
+  const weekdayMatch = lower.match(
+    /\b(?:on\s+|for\s+|this\s+|next\s+)?(monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat|sunday|sun)\b/i
+  );
+  if (weekdayMatch) {
+    const dowMap: Record<string, number> = {
+      sun: 0, sunday: 0,
+      mon: 1, monday: 1,
+      tue: 2, tues: 2, tuesday: 2,
+      wed: 3, wednesday: 3,
+      thu: 4, thur: 4, thurs: 4, thursday: 4,
+      fri: 5, friday: 5,
+      sat: 6, saturday: 6,
+    };
+    const targetDow = dowMap[weekdayMatch[1].toLowerCase()];
+    if (targetDow !== undefined) {
+      const todayStr = getTodayString();
+      const [y, m, d] = todayStr.split('-').map(Number);
+      const todayDate = new Date(Date.UTC(y, m - 1, d));
+      const currentDow = todayDate.getUTCDay();
+      let daysAhead = targetDow - currentDow;
+      if (daysAhead <= 0) daysAhead += 7;
+      return { date: getDateString(daysAhead), matchedPhrase: weekdayMatch[0] };
+    }
+  }
+
+  return { date: null };
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+function toYMD(year: number, month: number, day: number): string {
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
