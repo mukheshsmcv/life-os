@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Modal,
   Pressable,
@@ -9,13 +9,13 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { useTasks, Task, Event } from '@/contexts/tasks-context';
+import { Event, Task, useTasks } from '@/contexts/tasks-context';
+import { formatDisplayDate, getDateString, getTodayString } from '@/lib/date-time';
 import { DEFAULT_SCHEDULING_SETTINGS, scheduleTasks } from '@/lib/scheduler';
-import { getTodayString, getDateString, formatDisplayDate } from '@/lib/date-time';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function pad(n: number) {
+function pad(n: number): string {
   return String(n).padStart(2, '0');
 }
 
@@ -46,7 +46,6 @@ function parseDateParts(dateStr: string): { dow: string; day: number } {
 }
 
 function buildDateStrip(): string[] {
-  // 3 days before today + today + 3 days after = 7 days centered on today
   return Array.from({ length: 7 }, (_, i) => getDateString(i - 3));
 }
 
@@ -66,14 +65,14 @@ type ScheduledItem = Task & {
   endMinute: number;
 };
 
-type DetailSheetProps = {
+type TaskDetailSheetProps = {
   item: ScheduledItem | null;
   onClose: () => void;
   onComplete: (id: string) => void;
   onSkip: (id: string) => void;
 };
 
-function TaskDetailSheet({ item, onClose, onComplete, onSkip }: DetailSheetProps) {
+function TaskDetailSheet({ item, onClose, onComplete, onSkip }: TaskDetailSheetProps) {
   if (!item) return null;
 
   const canAct = item.status === 'pending';
@@ -82,9 +81,7 @@ function TaskDetailSheet({ item, onClose, onComplete, onSkip }: DetailSheetProps
     <Modal visible animationType="slide" transparent onRequestClose={onClose}>
       <Pressable style={ds.overlay} onPress={onClose} />
       <View style={ds.sheet}>
-        {/* Handle */}
         <View style={ds.handle} />
-
         <View style={ds.sheetHeader}>
           <Text style={ds.sheetType}>TASK</Text>
           <Pressable onPress={onClose} style={ds.closeBtn} accessibilityLabel="Close">
@@ -101,7 +98,9 @@ function TaskDetailSheet({ item, onClose, onComplete, onSkip }: DetailSheetProps
           </View>
           <View style={ds.metaItem}>
             <Text style={ds.metaLabel}>PRIORITY</Text>
-            <Text style={[ds.metaValue, ds[`pri_${item.priority}`]]}>{item.priority.toUpperCase()}</Text>
+            <Text style={[ds.metaValue, item.priority === 'high' ? ds.priHigh : item.priority === 'medium' ? ds.priMedium : ds.priLow]}>
+              {item.priority.toUpperCase()}
+            </Text>
           </View>
           <View style={ds.metaItem}>
             <Text style={ds.metaLabel}>STATUS</Text>
@@ -120,20 +119,76 @@ function TaskDetailSheet({ item, onClose, onComplete, onSkip }: DetailSheetProps
           <View style={ds.actions}>
             <Pressable
               style={ds.actionPrimary}
-              onPress={() => { onComplete(item.id); onClose(); }}
+              onPress={() => {
+                onComplete(item.id);
+                onClose();
+              }}
               accessibilityRole="button"
               accessibilityLabel="Mark task done">
               <Text style={ds.actionPrimaryText}>Done</Text>
             </Pressable>
             <Pressable
               style={ds.actionSecondary}
-              onPress={() => { onSkip(item.id); onClose(); }}
+              onPress={() => {
+                onSkip(item.id);
+                onClose();
+              }}
               accessibilityRole="button"
               accessibilityLabel="Skip task">
               <Text style={ds.actionSecondaryText}>Skip</Text>
             </Pressable>
           </View>
         )}
+      </View>
+    </Modal>
+  );
+}
+
+// ─── Event Detail Sheet ───────────────────────────────────────────────────────
+
+type EventDetailSheetProps = {
+  item: Event | null;
+  onClose: () => void;
+  onDelete: (id: string) => void;
+};
+
+function EventDetailSheet({ item, onClose, onDelete }: EventDetailSheetProps) {
+  if (!item) return null;
+
+  return (
+    <Modal visible animationType="slide" transparent onRequestClose={onClose}>
+      <Pressable style={ds.overlay} onPress={onClose} />
+      <View style={ds.sheet}>
+        <View style={ds.handle} />
+        <View style={ds.sheetHeader}>
+          <Text style={ds.sheetType}>FIXED EVENT</Text>
+          <Pressable onPress={onClose} style={ds.closeBtn} accessibilityLabel="Close">
+            <Text style={ds.closeX}>✕</Text>
+          </Pressable>
+        </View>
+
+        <Text style={ds.sheetTitle}>{item.title}</Text>
+
+        <View style={ds.timeBlock}>
+          <Text style={ds.timeLabel}>EVENT TIME</Text>
+          <Text style={ds.timeValue}>
+            {minutesToDisplay(item.startMinute)} — {minutesToDisplay(item.endMinute)}
+          </Text>
+          {item.notes ? <Text style={ds.notesText}>{item.notes}</Text> : null}
+        </View>
+
+        <View style={ds.actions}>
+          <Pressable
+            style={ds.actionDelete}
+            onPress={() => {
+              onDelete(item.id);
+              onClose();
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="Delete event">
+            <Text style={ds.actionDeleteText}>Delete Event</Text>
+          </Pressable>
+        </View>
       </View>
     </Modal>
   );
@@ -209,9 +264,9 @@ const ds = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-  pri_high: { color: '#FF7B7B' },
-  pri_medium: { color: '#A7A0FF' },
-  pri_low: { color: '#737983' },
+  priHigh: { color: '#FF7B7B' },
+  priMedium: { color: '#A7A0FF' },
+  priLow: { color: '#737983' },
   timeBlock: {
     backgroundColor: '#0B0D10',
     borderRadius: 12,
@@ -229,6 +284,11 @@ const ds = StyleSheet.create({
     color: '#E8E9EC',
     fontSize: 16,
     fontWeight: '600',
+  },
+  notesText: {
+    color: '#9A9EA6',
+    fontSize: 13,
+    marginTop: 4,
   },
   actions: {
     flexDirection: 'row',
@@ -250,28 +310,35 @@ const ds = StyleSheet.create({
     alignItems: 'center',
   },
   actionSecondaryText: { color: '#D2D5DA', fontWeight: '600', fontSize: 15 },
-} as any);
+  actionDelete: {
+    flex: 1,
+    backgroundColor: '#2A1818',
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  actionDeleteText: { color: '#FF7B7B', fontWeight: '700', fontSize: 15 },
+});
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function CalendarScreen() {
-  const { tasks, getEventsForDate } = useTasks();
+  const insets = useSafeAreaInsets();
+  const { tasks, getEventsForDate, completeTask, skipTask, deleteTask, deleteEvent } = useTasks();
   const todayStr = getTodayString();
   const dateStrip = buildDateStrip();
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
   const [detailItem, setDetailItem] = useState<ScheduledItem | null>(null);
+  const [detailEvent, setDetailEvent] = useState<Event | null>(null);
   const [now, setNow] = useState(() => new Date());
 
-  // Keep current time updated for the timeline indicator
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 60000);
     return () => clearInterval(timer);
   }, []);
 
-
   const isViewingToday = selectedDate === todayStr;
 
-  // Gather data for selected date
   const dayEvents = getEventsForDate(selectedDate);
   const explicitDayTasks = tasks.filter((t) => t.date === selectedDate);
   const undatedTasks = isViewingToday ? tasks.filter((t) => t.date == null) : [];
@@ -280,9 +347,9 @@ export default function CalendarScreen() {
   const referenceDate = isViewingToday
     ? now
     : (() => {
-      const [y, m, d] = selectedDate.split('-').map(Number);
-      return new Date(y, m - 1, d, 0, 0, 0);
-    })();
+        const [y, m, d] = selectedDate.split('-').map(Number);
+        return new Date(y, m - 1, d, 0, 0, 0);
+      })();
 
   const schedulerEvents = dayEvents.map((e) => ({
     id: e.id,
@@ -294,8 +361,7 @@ export default function CalendarScreen() {
   const schedule = scheduleTasks(dayTasks, DEFAULT_SCHEDULING_SETTINGS, referenceDate, schedulerEvents);
   const taskMap = new Map(dayTasks.map((t) => [t.id, t]));
 
-  // Build scheduled task blocks (excluding event blocks)
-  const scheduledBlocks: ScheduledItem[] = schedule.blocks.flatMap((block) => {
+  const explicitScheduledBlocks: ScheduledItem[] = schedule.blocks.flatMap((block) => {
     if (block.taskId.startsWith('event-')) return [];
     const task = taskMap.get(block.taskId);
     return task ? [{ ...task, ...block }] : [];
@@ -309,7 +375,6 @@ export default function CalendarScreen() {
   const totalItemsCount = dayTasks.length + dayEvents.length;
   const currentMinute = dateToMinutes(now);
 
-  // ─── Build unified timeline with free-time gaps ───────────────────────────
   type TimelineItem =
     | { kind: 'event'; data: Event }
     | { kind: 'task'; data: ScheduledItem }
@@ -317,21 +382,19 @@ export default function CalendarScreen() {
 
   const timelineItems: TimelineItem[] = [];
 
-  // Merge events and tasks, sort by start minute
   const allTimed: Array<{ startMinute: number; endMinute: number; item: TimelineItem }> = [
     ...dayEvents.map((e) => ({
       startMinute: e.startMinute,
       endMinute: e.endMinute,
       item: { kind: 'event' as const, data: e },
     })),
-    ...scheduledBlocks.map((b) => ({
+    ...explicitScheduledBlocks.map((b) => ({
       startMinute: b.startMinute,
       endMinute: b.endMinute,
       item: { kind: 'task' as const, data: b },
     })),
   ].sort((a, b) => a.startMinute - b.startMinute);
 
-  // Insert free-time gaps >= 30 min
   let lastEnd = DEFAULT_SCHEDULING_SETTINGS.planningStartMinute;
   for (const entry of allTimed) {
     const gap = entry.startMinute - lastEnd;
@@ -396,7 +459,7 @@ export default function CalendarScreen() {
         })}
       </ScrollView>
 
-      {/* ─── Selected date row ─── */}
+      {/* ─── Selected Date Row ─── */}
       <View style={styles.selectedDateRow}>
         <Text style={styles.selectedDateLabel}>{formatDisplayDate(selectedDate)}</Text>
         <Text style={styles.taskCount}>
@@ -425,11 +488,18 @@ export default function CalendarScreen() {
                 const h = Math.floor(gapMins / 60);
                 const m = gapMins % 60;
                 const label = h > 0 ? (m > 0 ? `${h}h ${m}m free` : `${h}h free`) : `${m}m free`;
+                const showNow =
+                  isViewingToday &&
+                  currentMinute >= item.startMinute &&
+                  currentMinute < item.endMinute;
                 return (
-                  <View key={`free-${idx}`} style={styles.freeTimeRow}>
-                    <Text style={styles.freeTimeTime}>{minutesToDisplay(item.startMinute)}</Text>
-                    <View style={styles.freeTimeLine} />
-                    <Text style={styles.freeTimeLabel}>{label}</Text>
+                  <View key={`free-${idx}`}>
+                    {showNow && <NowIndicator currentMinute={currentMinute} />}
+                    <View style={styles.freeTimeRow}>
+                      <Text style={styles.freeTimeTime}>{minutesToDisplay(item.startMinute)}</Text>
+                      <View style={styles.freeTimeLine} />
+                      <Text style={styles.freeTimeLabel}>{label}</Text>
+                    </View>
                   </View>
                 );
               }
@@ -437,7 +507,6 @@ export default function CalendarScreen() {
               if (item.kind === 'event') {
                 const ev = item.data;
                 const dur = ev.endMinute - ev.startMinute;
-                // Show NOW indicator before this event if appropriate
                 const showNow =
                   isViewingToday &&
                   currentMinute >= ev.startMinute &&
@@ -445,7 +514,11 @@ export default function CalendarScreen() {
                 return (
                   <View key={ev.id}>
                     {showNow && <NowIndicator currentMinute={currentMinute} />}
-                    <View style={styles.timelineRow}>
+                    <Pressable
+                      onPress={() => setDetailEvent(ev)}
+                      style={styles.timelineRow}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${ev.title} event detail`}>
                       <View style={styles.timeCol}>
                         <Text style={styles.timeText}>{minutesToDisplay(ev.startMinute)}</Text>
                         <View style={styles.timeLine} />
@@ -464,80 +537,116 @@ export default function CalendarScreen() {
                             {dur} min{ev.notes ? ` · ${ev.notes}` : ''}
                           </Text>
                         </View>
-                      </View>
-                      <View style={styles.cardActions}>
-                        <Pressable style={styles.deleteButton} onPress={() => deleteEvent(ev.id)}>
-                          <Text style={styles.deleteButtonText}>Delete</Text>
+                        <Pressable
+                          style={styles.deleteBtn}
+                          onPress={(e) => {
+                            e.stopPropagation();
+                            deleteEvent(ev.id);
+                          }}
+                          accessibilityLabel="Delete event">
+                          <Text style={styles.deleteBtnText}>✕</Text>
                         </Pressable>
                       </View>
-                    </View>
+                    </Pressable>
                   </View>
                 );
               }
 
-        {/* SCHEDULED TASKS SECTION */}
-        {explicitScheduledBlocks.length > 0 && (
-          <>
-            <Text style={styles.sectionTitle}>SCHEDULED</Text>
-            {explicitScheduledBlocks.map((block) => (
-              <View key={block.id} style={styles.taskCard}>
-                <View style={styles.timeColumn}>
-                  <Text style={styles.timeText}>{formatTime(block.start)}</Text>
-                  <View style={styles.timeLine} />
-                  <Text style={styles.timeText}>{formatTime(block.end)}</Text>
-                </View>
-                <View style={[styles.taskBody, block.status !== 'pending' && styles.taskBodyDone]}>
-                  <View style={[styles.priorityStripe, styles[`priority_${block.priority}`]]} />
-                  <View style={styles.taskDetails}>
-                    <Text style={[styles.taskTitle, block.status !== 'pending' && styles.taskTitleDone]}>
-                      {block.title}
-                    </Text>
-                    <Text style={styles.taskMeta}>
-                      {block.durationMinutes} min · {block.priority}
-                      {block.status !== 'pending' ? ` · ${block.status}` : ''}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-            ))}
-          </>
-        )}
-
-        {/* ─── Unscheduled ─── */}
-        {unscheduledTasks.length > 0 && (
-          <>
-            <Text style={styles.sectionTitle}>COULD NOT FIT</Text>
-            {unscheduledTasks.map((task) => (
-              <View key={task.id} style={[styles.timelineRow, styles.unscheduledRow]}>
-                <View style={styles.timeCol}>
-                  <Text style={styles.noTimeText}>—</Text>
-                </View>
-                <View style={[styles.card, styles.cardUnscheduled]}>
-                  <View
-                    style={[
-                      styles.stripe,
-                      { backgroundColor: priorityColors[task.priority] ?? '#4A5060' },
-                    ]}
-                  />
-                  <View style={styles.cardBody}>
-                    <Text style={styles.cardTitle}>{task.title}</Text>
-                    <Text style={styles.cardMeta}>
-                      {formatDuration(task.durationMinutes)} · {task.priority} · unscheduled
-                    </Text>
-                  </View>
-                  <View style={styles.cardActions}>
-                    {task.status === 'pending' && (
-                      <Pressable style={styles.completeButton} onPress={() => completeTask(task.id)}>
-                        <Text style={styles.completeButtonText}>Done</Text>
-                      </Pressable>
-                    )}
-                    <Pressable style={styles.deleteButton} onPress={() => deleteTask(task.id)}>
-                      <Text style={styles.deleteButtonText}>Delete</Text>
+              if (item.kind === 'task') {
+                const block = item.data;
+                const isDone = block.status !== 'pending';
+                const showNow =
+                  isViewingToday &&
+                  currentMinute >= block.startMinute &&
+                  currentMinute < block.endMinute;
+                return (
+                  <View key={block.id}>
+                    {showNow && <NowIndicator currentMinute={currentMinute} />}
+                    <Pressable
+                      onPress={() => setDetailItem(block)}
+                      style={styles.timelineRow}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${block.title} task detail`}>
+                      <View style={styles.timeCol}>
+                        <Text style={styles.timeText}>{formatBlockTime(block.start)}</Text>
+                        <View style={styles.timeLine} />
+                        <Text style={styles.timeText}>{formatBlockTime(block.end)}</Text>
+                      </View>
+                      <View style={[styles.card, isDone && styles.cardDone]}>
+                        <View
+                          style={[
+                            styles.stripe,
+                            { backgroundColor: priorityColors[block.priority] ?? '#4A5060' },
+                          ]}
+                        />
+                        <View style={styles.cardBody}>
+                          <View style={styles.cardTitleRow}>
+                            <Text style={[styles.cardTitle, isDone && styles.cardTitleDone]}>
+                              {block.title}
+                            </Text>
+                            <View style={styles.taskBadge}>
+                              <Text style={styles.taskBadgeText}>TASK</Text>
+                            </View>
+                          </View>
+                          <Text style={styles.cardMeta}>
+                            {formatDuration(block.durationMinutes)} · {block.priority}
+                            {isDone ? ` · ${block.status}` : ''}
+                          </Text>
+                        </View>
+                      </View>
                     </Pressable>
                   </View>
-                </View>
-              </View>
-            ))}
+                );
+              }
+
+              return null;
+            })}
+
+            {/* ─── Unscheduled ─── */}
+            {unscheduledTasks.length > 0 && (
+              <>
+                <Text style={styles.sectionTitle}>COULD NOT FIT</Text>
+                {unscheduledTasks.map((task) => (
+                  <View key={task.id} style={[styles.timelineRow, styles.unscheduledRow]}>
+                    <View style={styles.timeCol}>
+                      <Text style={styles.noTimeText}>—</Text>
+                    </View>
+                    <View style={[styles.card, styles.cardUnscheduled]}>
+                      <View
+                        style={[
+                          styles.stripe,
+                          { backgroundColor: priorityColors[task.priority] ?? '#4A5060' },
+                        ]}
+                      />
+                      <View style={styles.cardBody}>
+                        <Text style={styles.cardTitle}>{task.title}</Text>
+                        <Text style={styles.cardMeta}>
+                          {formatDuration(task.durationMinutes)} · {task.priority} · unscheduled
+                        </Text>
+                      </View>
+                      <View style={styles.cardActions}>
+                        {task.status === 'pending' && (
+                          <Pressable
+                            style={styles.doneBtnSmall}
+                            onPress={() => completeTask(task.id)}
+                            accessibilityLabel="Complete task">
+                            <Text style={styles.doneBtnSmallText}>✓</Text>
+                          </Pressable>
+                        )}
+                        <Pressable
+                          style={styles.deleteBtnSmall}
+                          onPress={() => deleteTask(task.id)}
+                          accessibilityLabel="Delete task">
+                          <Text style={styles.deleteBtnSmallText}>✕</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  </View>
+                ))}
+              </>
+            )}
+
+            <View style={{ height: 40 }} />
           </>
         )}
       </ScrollView>
@@ -549,6 +658,15 @@ export default function CalendarScreen() {
           onClose={() => setDetailItem(null)}
           onComplete={completeTask}
           onSkip={skipTask}
+        />
+      )}
+
+      {/* ─── Event Detail Sheet ─── */}
+      {detailEvent && (
+        <EventDetailSheet
+          item={detailEvent}
+          onClose={() => setDetailEvent(null)}
+          onDelete={deleteEvent}
         />
       )}
     </View>
@@ -597,7 +715,6 @@ const ni = StyleSheet.create({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0B0D10' },
-
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -616,7 +733,6 @@ const styles = StyleSheet.create({
   },
   todayBtnText: { color: '#B0B4BB', fontSize: 13, fontWeight: '600' },
 
-  // ── Date strip ──
   strip: { maxHeight: 100 },
   stripContent: { paddingHorizontal: 14, paddingVertical: 8, gap: 8 },
   dateItem: {
@@ -632,81 +748,107 @@ const styles = StyleSheet.create({
   dateDay: { color: '#E8E9EC', fontSize: 20, fontWeight: '700', marginTop: 2 },
   dateDaySelected: { color: '#0B0D10' },
   todayDot: {
-    width: 4, height: 4, borderRadius: 2,
-    backgroundColor: '#A7A0FF', marginTop: 4,
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#A7A0FF',
+    marginTop: 4,
   },
   todayDotSelected: { backgroundColor: '#0B0D10' },
 
-  // ── Selected date label ──
   selectedDateRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#191C22',
-    borderTopWidth: 1,
-    borderTopColor: '#191C22',
+    paddingVertical: 10,
   },
   selectedDateLabel: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
   taskCount: { color: '#737983', fontSize: 13 },
 
-  // ── Content ──
-  content: { paddingVertical: 16 },
-  sectionTitle: {
-    color: '#A7A0FF',
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 1,
-    marginBottom: 10,
-    marginTop: 20,
-    paddingHorizontal: 20,
-  },
-
-  // ── Empty state ──
-  emptyState: { alignItems: 'center', paddingTop: 60, paddingHorizontal: 24 },
+  content: { paddingHorizontal: 20, paddingBottom: 30 },
+  emptyState: { alignItems: 'center', paddingTop: 60, paddingBottom: 40 },
   emptyTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: '700', marginBottom: 8 },
   emptySubtitle: { color: '#737983', fontSize: 14, textAlign: 'center', lineHeight: 20 },
 
-  // ── Timeline rows ──
-  timelineRow: {
+  freeTimeRow: {
     flexDirection: 'row',
-    alignItems: 'stretch',
-    marginBottom: 10,
-    paddingHorizontal: 16,
+    alignItems: 'center',
+    paddingVertical: 12,
     gap: 12,
   },
-  unscheduledRow: { opacity: 0.6 },
+  freeTimeTime: { width: 60, color: '#4A5060', fontSize: 12, fontWeight: '500' },
+  freeTimeLine: { flex: 1, height: 1, backgroundColor: '#1E2228' },
+  freeTimeLabel: { color: '#4A5060', fontSize: 12, fontWeight: '500' },
 
-  timeCol: {
-    width: 66,
-    alignItems: 'flex-end',
-    justifyContent: 'space-between',
-    paddingVertical: 12,
+  timelineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+    gap: 12,
   },
-  timeText: { color: '#4A5060', fontSize: 11, fontWeight: '600' },
-  noTimeText: { color: '#303640', fontSize: 18, alignSelf: 'center' },
-  timeLine: { width: 1, flex: 1, backgroundColor: '#1E2228', marginVertical: 3 },
+  timeCol: { width: 60, alignItems: 'flex-start' },
+  timeText: { color: '#737983', fontSize: 12, fontWeight: '500' },
+  timeLine: { width: 2, height: 12, backgroundColor: '#252932', marginVertical: 2, marginLeft: 10 },
+  noTimeText: { color: '#4A5060', fontSize: 14, fontWeight: '700' },
 
-  // ── Cards ──
   card: {
     flex: 1,
-    flexDirection: 'row',
     backgroundColor: '#171A20',
     borderRadius: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
     overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#252932',
   },
-  taskBodyDone: { opacity: 0.55 },
-  taskBodyUnscheduled: { borderWidth: 1, borderColor: '#252932', backgroundColor: '#0F1115' },
+  cardDone: { opacity: 0.5, borderColor: '#1E2228' },
+  eventCard: { borderColor: '#3D3418' },
+  cardUnscheduled: { backgroundColor: '#14161B', borderColor: '#20232B' },
+  stripe: { width: 4, alignSelf: 'stretch' },
+  cardBody: { flex: 1, paddingHorizontal: 14, paddingVertical: 12 },
+  cardTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  cardTitle: { color: '#E8E9EC', fontSize: 15, fontWeight: '600', flex: 1 },
+  cardTitleDone: { color: '#4A5060', textDecorationLine: 'line-through' },
+  eventBadge: {
+    backgroundColor: '#3D3418',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  eventBadgeText: { color: '#FCD34D', fontSize: 10, fontWeight: '700' },
+  taskBadge: {
+    backgroundColor: '#252932',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  taskBadgeText: { color: '#A7A0FF', fontSize: 10, fontWeight: '700' },
+  cardMeta: { color: '#737983', fontSize: 12, marginTop: 4 },
 
-  priorityStripe: { width: 4 },
-  priority_high: { backgroundColor: '#FF7B7B' },
-  priority_medium: { backgroundColor: '#A7A0FF' },
-  priority_low: { backgroundColor: '#4A5060' },
+  deleteBtn: { padding: 12 },
+  deleteBtnText: { color: '#FF7B7B', fontSize: 14, fontWeight: '700' },
 
-  taskDetails: { flex: 1, padding: 14 },
-  taskTitle: { color: '#E8E9EC', fontSize: 15, fontWeight: '600' },
-  taskTitleDone: { color: '#636870', textDecorationLine: 'line-through' },
-  taskMeta: { color: '#737983', fontSize: 12, marginTop: 4 },
-} as any); // `as any` for dynamic priority_ keys
+  cardActions: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingRight: 10 },
+  doneBtnSmall: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#252932',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  doneBtnSmallText: { color: '#5ECC8B', fontSize: 12, fontWeight: '700' },
+  deleteBtnSmall: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#252932',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteBtnSmallText: { color: '#FF7B7B', fontSize: 12, fontWeight: '700' },
+
+  sectionTitle: { color: '#FF7B7B', fontSize: 11, fontWeight: '700', letterSpacing: 1.2, marginTop: 20, marginBottom: 12 },
+  unscheduledRow: { opacity: 0.8 },
+});
