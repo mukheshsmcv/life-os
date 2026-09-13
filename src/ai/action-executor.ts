@@ -8,8 +8,8 @@ import { formatDisplayDate, getTodayString } from '@/lib/date-time';
 import { AIAction, ExecutionResult } from './ai-types';
 
 export type TaskOperations = {
-  addTask: (task: { title: string; durationMinutes: number; priority: TaskPriority; date?: string | null }) => void;
-  updateTask?: (id: string, updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date'>>) => void;
+  addTask: (task: { title: string; durationMinutes: number; priority: TaskPriority; date?: string | null; scheduledStartMinute?: number | null }) => void;
+  updateTask?: (id: string, updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date' | 'scheduledStartMinute'>>) => void;
   completeTask: (id: string) => void;
   skipTask: (id: string) => void;
   deleteTask: (id: string) => void;
@@ -49,11 +49,12 @@ export function executeAction(
 
   switch (action.type) {
     case 'create_task': {
-      const { title, durationMinutes, priority, date: rawDate } = action.payload;
+      const { title, durationMinutes, priority, date: rawDate, scheduledStartMinute } = action.payload;
       // Preserve null/undefined: do NOT silently default to today.
       // null  = undated; YYYY-MM-DD = explicitly pinned to that calendar day.
       const taskDate = rawDate ?? null;
-      context.operations.addTask({ title, durationMinutes, priority, date: taskDate });
+      const startMin = scheduledStartMinute ?? null;
+      context.operations.addTask({ title, durationMinutes, priority, date: taskDate, scheduledStartMinute: startMin });
 
       const todayStr = getTodayString();
       const updatedTasks: Task[] = [
@@ -64,7 +65,7 @@ export function executeAction(
           durationMinutes,
           priority,
           status: 'pending',
-          scheduledStartMinute: null,
+          scheduledStartMinute: startMin,
           date: taskDate,
         },
       ];
@@ -151,7 +152,7 @@ export function executeAction(
     }
 
     case 'update_task': {
-      const { taskId, title, durationMinutes, priority, date } = action.payload;
+      const { taskId, title, durationMinutes, priority, date, scheduledStartMinute } = action.payload;
       if (!taskId) {
         return { success: false, message: 'Missing task ID for update.' };
       }
@@ -160,11 +161,12 @@ export function executeAction(
         return { success: false, message: `Task with ID '${taskId}' does not exist.` };
       }
 
-      const updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date'>> = {};
+      const updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date' | 'scheduledStartMinute'>> = {};
       if (title !== undefined) updates.title = title;
       if (durationMinutes !== undefined) updates.durationMinutes = durationMinutes;
       if (priority !== undefined) updates.priority = priority;
       if (date !== undefined) updates.date = date;
+      if (scheduledStartMinute !== undefined) updates.scheduledStartMinute = scheduledStartMinute;
 
       if (context.operations.updateTask) {
         context.operations.updateTask(taskId, updates);

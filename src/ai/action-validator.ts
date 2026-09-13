@@ -38,6 +38,16 @@ export function validateAction(action: AIAction, tasks: Task[]): ValidationResul
         }
       }
 
+      if (action.payload.scheduledStartMinute !== undefined && action.payload.scheduledStartMinute !== null) {
+        const sm = action.payload.scheduledStartMinute;
+        if (!Number.isInteger(sm) || sm < 0 || sm >= 1440) {
+          return {
+            valid: false,
+            error: `Invalid start minute ${sm}. Must be an integer between 0 and 1439.`,
+          };
+        }
+      }
+
       return { valid: true, action };
     }
 
@@ -46,12 +56,20 @@ export function validateAction(action: AIAction, tasks: Task[]): ValidationResul
     case 'delete_task':
     case 'update_task': {
       if (action.type === 'update_task') {
-        const { date, durationMinutes, priority } = action.payload;
+        const { date, durationMinutes, priority, scheduledStartMinute } = action.payload;
         if (date !== undefined && date !== null && !isValidDateString(date)) {
           return {
             valid: false,
             error: `Invalid date "${date}". Date must be in YYYY-MM-DD format (or null for anytime).`,
           };
+        }
+        if (scheduledStartMinute !== undefined && scheduledStartMinute !== null) {
+          if (!Number.isInteger(scheduledStartMinute) || scheduledStartMinute < 0 || scheduledStartMinute >= 1440) {
+            return {
+              valid: false,
+              error: `Invalid start minute ${scheduledStartMinute}. Must be an integer between 0 and 1439.`,
+            };
+          }
         }
         if (durationMinutes !== undefined && (!Number.isFinite(durationMinutes) || durationMinutes <= 0)) {
           return {

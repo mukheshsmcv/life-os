@@ -7,6 +7,8 @@ export type CreateTaskPayload = {
   priority: TaskPriority;
   /** YYYY-MM-DD resolved by the LLM from relative expressions ("tomorrow", "Monday", etc.). */
   date?: string;
+  /** Wall-clock minute of day (0-1439), e.g. 540 for 9:00 AM, or null for flexible scheduling */
+  scheduledStartMinute?: number | null;
 };
 
 export type TaskRefPayload = {
@@ -28,6 +30,7 @@ export type UpdateTaskAction = {
     durationMinutes?: number;
     priority?: TaskPriority;
     date?: string | null;
+    scheduledStartMinute?: number | null;
   };
 };
 

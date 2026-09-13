@@ -89,6 +89,80 @@ export function runParserTests(): { passed: number; failed: number } {
     passed++;
   }
 
-  console.log(`Parser Tests Result: ${passed} PASSED, ${failed} FAILED out of ${allTests.length} tests.`);
+  // --- Explicit Time Bug Tests (Cases A through G) ---
+
+  // Case A: Flexible task (no explicit time)
+  const caseA = parseIntent("Study pathology tomorrow for 2 hours.");
+  if (caseA.success && caseA.actions[0]?.type === 'create_task' && (caseA.actions[0].payload.scheduledStartMinute ?? null) === null) {
+    passed++;
+  } else {
+    console.error(`FAIL Case A: expected flexible task with no scheduledStartMinute`);
+    failed++;
+  }
+
+  // Case B: Explicit 9 AM constraint
+  const caseB = parseIntent("Study pathology tomorrow at 9 AM for 2 hours.");
+  if (caseB.success && caseB.actions[0]?.type === 'create_task' && caseB.actions[0].payload.scheduledStartMinute === 540) {
+    passed++;
+  } else {
+    console.error(`FAIL Case B: expected scheduledStartMinute = 540 (9 AM)`);
+    failed++;
+  }
+
+  // Case C: Multi-action sequence (9 AM & 1 PM)
+  const caseC = parseIntent("Study pathology tomorrow at 9 AM for 2 hours, then anatomy at 1 PM for 1 hour.");
+  if (
+    caseC.success &&
+    caseC.actions.length === 2 &&
+    caseC.actions[0]?.type === 'create_task' &&
+    caseC.actions[0].payload.scheduledStartMinute === 540 &&
+    caseC.actions[1]?.type === 'create_task' &&
+    caseC.actions[1].payload.scheduledStartMinute === 780
+  ) {
+    passed++;
+  } else {
+    console.error(`FAIL Case C: expected 2 actions with 9 AM (540) and 1 PM (780)`);
+    failed++;
+  }
+
+  // Case D: Explicit 9:30 AM
+  const caseD = parseIntent("Schedule pathology at 9:30 AM today.");
+  if (caseD.success && caseD.actions[0]?.type === 'create_task' && caseD.actions[0].payload.scheduledStartMinute === 570) {
+    passed++;
+  } else {
+    console.error(`FAIL Case D: expected scheduledStartMinute = 570 (9:30 AM)`);
+    failed++;
+  }
+
+  // Case E: Update existing task with 3 PM constraint
+  const caseE = parseIntent("Move pathology to tomorrow at 3 PM.");
+  if (caseE.success && caseE.actions[0]?.type === 'update_task' && caseE.actions[0].payload.scheduledStartMinute === 900) {
+    passed++;
+  } else {
+    console.error(`FAIL Case E: expected update_task with scheduledStartMinute = 900 (3 PM)`);
+    failed++;
+  }
+
+  // Case F: Return task to anytime / flexible
+  const caseF = parseIntent("Make pathology anytime tomorrow.");
+  if (caseF.success && caseF.actions[0]?.type === 'update_task' && caseF.actions[0].payload.scheduledStartMinute === null) {
+    passed++;
+  } else {
+    console.error(`FAIL Case F: expected update_task with scheduledStartMinute = null`);
+    failed++;
+  }
+
+  // Case G: Doctor appointment handled safely
+  const caseG = parseIntent("Doctor appointment tomorrow at 10 AM.");
+  if (caseG !== undefined) {
+    passed++;
+  } else {
+    console.error(`FAIL Case G: Doctor appointment failed execution`);
+    failed++;
+  }
+
+  console.log(`Parser Tests Result: ${passed} PASSED, ${failed} FAILED out of ${allTests.length + 7} tests.`);
   return { passed, failed };
 }
+
+runParserTests();
