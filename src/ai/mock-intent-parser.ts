@@ -368,6 +368,10 @@ export function parseIntent(userMessage: string): ParseIntentResult {
     if (createMatch) break;
   }
 
+  if (!createMatch && (parseDurationMinutes(normalized) !== null || parseExplicitStartMinute(normalized).startMinute !== null)) {
+    createMatch = [normalized, normalized];
+  }
+
   if (createMatch) {
     const timeRes = parseExplicitStartMinute(normalized);
     const priority = parsePriority(normalized);

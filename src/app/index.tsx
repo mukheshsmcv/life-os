@@ -13,6 +13,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SuggestionChip } from '@/components/SuggestionChip';
 import { Task, useTasks } from '@/contexts/tasks-context';
 import { getTodayString } from '@/lib/date-time';
+import { determineTodayFocus } from '@/lib/focus-engine';
 import {
   DEFAULT_SCHEDULING_SETTINGS,
   ScheduledBlock,
@@ -67,7 +68,6 @@ export default function HomeScreen() {
   }, []);
 
   const todayStr = getTodayString();
-  const todayTasks = tasks.filter((task) => task.date === todayStr || task.date == null);
   const todayEvents = getEventsForDate(todayStr);
 
   const schedulerEvents = todayEvents.map((e) => ({
@@ -77,65 +77,59 @@ export default function HomeScreen() {
     endMinute: e.endMinute,
   }));
 
-  const schedule: ScheduleResult = scheduleTasks(
-    todayTasks,
-    DEFAULT_SCHEDULING_SETTINGS,
-    currentTime,
-    schedulerEvents
-  );
-
-  const taskById = new Map(todayTasks.map((task) => [task.id, task]));
-  const scheduledActivities: ScheduledActivity[] = schedule.blocks.flatMap((block) => {
-    const task = taskById.get(block.taskId);
-    return task ? [{ ...task, ...block }] : [];
+  const focus = determineTodayFocus({
+    tasks,
+    events: schedulerEvents,
+    currentDate: currentTime,
+    pausedActivityId: pausedActivity?.id ?? null,
   });
 
-  const unscheduledTasks = schedule.unscheduledTaskIds.flatMap((taskId) => {
-    const task = taskById.get(taskId);
-    return task ? [task] : [];
-  });
+  const nowItem = focus.nowItem;
+  const isCurrentActivityPaused = focus.isPaused;
+  const nowLabel = isCurrentActivityPaused
+    ? 'PAUSED'
+    : focus.stateKind === 'active_now'
+    ? 'NOW'
+    : focus.stateKind === 'available_now'
+    ? 'NOW'
+    : focus.stateKind === 'waiting_upcoming'
+    ? 'UP NEXT'
+    : nowItem
+    ? 'NOT SCHEDULED'
+    : 'DAY COMPLETE';
 
-  const pausedActivityInSchedule = pausedActivity
-    ? scheduledActivities.find((activity) => activity.id === pausedActivity.id)
-    : undefined;
-  const timedCurrentActivity = scheduledActivities.find(
-    (a) => currentTime >= a.start && currentTime < a.end
-  );
-  const currentActivity = pausedActivityInSchedule ?? timedCurrentActivity;
-  const nextActivity = scheduledActivities.find((a) => a.start > currentTime);
-  const upcomingActivities = scheduledActivities.filter((a) => a.start > currentTime);
-  const isCurrentActivityPaused = Boolean(pausedActivityInSchedule);
-  const displayedScheduledActivity = currentActivity ?? nextActivity;
-  const displayedTask = displayedScheduledActivity ?? unscheduledTasks[0];
-  const progressTime = pausedActivityInSchedule ? pausedActivity!.pausedAt : currentTime;
-  const progressPercent = currentActivity
+  const displayedItem = nowItem ?? focus.upNextItems[0];
+  const displayedTitle = displayedItem?.title ?? 'Day complete';
+  const progressTime = pausedActivity ? pausedActivity.pausedAt : currentTime;
+
+  const progressPercent = displayedItem
     ? Math.min(
         100,
         Math.max(
           0,
-          ((progressTime.getTime() - currentActivity.start.getTime()) /
-            (currentActivity.end.getTime() - currentActivity.start.getTime())) *
+          ((progressTime.getTime() - displayedItem.start.getTime()) /
+            (displayedItem.end.getTime() - displayedItem.start.getTime())) *
             100
         )
       )
     : 0;
 
   const handleDone = () => {
-    if (!currentActivity) return;
-    completeTask(currentActivity.id);
+    if (!nowItem || nowItem.kind !== 'task') return;
+    completeTask(nowItem.id);
     setPausedActivity(null);
   };
 
   const handleSkip = () => {
-    if (!currentActivity) return;
-    skipTask(currentActivity.id);
+    if (!nowItem || nowItem.kind !== 'task') return;
+    skipTask(nowItem.id);
     setPausedActivity(null);
   };
 
   const handlePause = () => {
-    if (!currentActivity) return;
+    if (!nowItem || nowItem.kind !== 'task') return;
     setPausedActivity((activity) =>
-      activity?.id === currentActivity.id ? null : { id: currentActivity.id, pausedAt: currentTime }
+      activity?.id === nowItem.id ? null : { id: nowItem.id, pausedAt: currentTime }
     );
   };
 
@@ -159,47 +153,29 @@ export default function HomeScreen() {
 
         {/* ─── NOW Card ─── */}
         <View style={styles.nowCard}>
-          <Text style={styles.nowLabel}>
-            {isCurrentActivityPaused
-              ? 'PAUSED'
-              : currentActivity
-                ? 'NOW'
-                : displayedScheduledActivity
-                  ? 'UP NEXT'
-                  : displayedTask
-                    ? 'NOT SCHEDULED'
-                    : 'DAY COMPLETE'}
-          </Text>
-          <Text style={styles.currentTask}>{displayedTask?.title ?? 'Day complete'}</Text>
-          {displayedTask ? (
+          <Text style={styles.nowLabel}>{nowLabel}</Text>
+          <Text style={styles.currentTask}>{displayedTitle}</Text>
+          {displayedItem ? (
             <>
-              {displayedScheduledActivity ? (
-                <>
-                  <Text style={styles.time}>
-                    {formatTime(displayedScheduledActivity.start)} — {formatTime(displayedScheduledActivity.end)}
-                  </Text>
-                  <View style={styles.progressBg}>
-                    <View
-                      style={[
-                        styles.progressBar,
-                        { width: `${progressPercent}%` as DimensionValue },
-                      ]}
-                    />
-                  </View>
-                </>
-              ) : (
-                <Text style={styles.time}>Not scheduled today · {displayedTask.durationMinutes} min</Text>
-              )}
+              <Text style={styles.time}>
+                {formatTime(displayedItem.start)} — {formatTime(displayedItem.end)}
+              </Text>
+              <View style={styles.progressBg}>
+                <View
+                  style={[
+                    styles.progressBar,
+                    { width: `${progressPercent}%` as DimensionValue },
+                  ]}
+                />
+              </View>
               <Text style={styles.remaining}>
                 {isCurrentActivityPaused
                   ? 'Activity paused'
-                  : currentActivity
-                    ? formatDuration(Math.max(0, Math.ceil((currentActivity.end.getTime() - currentTime.getTime()) / 60000))) + ' remaining'
-                    : displayedScheduledActivity
-                      ? 'Starts in ' + formatDuration(Math.max(0, Math.ceil((displayedScheduledActivity.start.getTime() - currentTime.getTime()) / 60000)))
-                      : 'No open time remains in today’s planning window'}
+                  : focus.stateKind === 'active_now' || focus.stateKind === 'available_now'
+                  ? formatDuration(Math.max(0, Math.ceil((displayedItem.end.getTime() - currentTime.getTime()) / 60000))) + ' remaining'
+                  : 'Starts in ' + formatDuration(Math.max(0, Math.ceil((displayedItem.start.getTime() - currentTime.getTime()) / 60000)))}
               </Text>
-              {currentActivity && (
+              {nowItem && nowItem.kind === 'task' && (
                 <View style={styles.actions}>
                   <Pressable style={styles.actionButton} onPress={handleDone}>
                     <Text style={styles.actionText}>Done</Text>
@@ -241,12 +217,12 @@ export default function HomeScreen() {
         </View>
 
         {/* ─── Up Next ─── */}
-        {upcomingActivities.length > 0 && (
+        {focus.upNextItems.length > 0 && (
           <>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Up next</Text>
             </View>
-            {upcomingActivities.map((activity) => (
+            {focus.upNextItems.map((activity) => (
               <ScheduleItem
                 key={activity.id}
                 start={activity.start}
@@ -259,12 +235,12 @@ export default function HomeScreen() {
         )}
 
         {/* ─── Unscheduled ─── */}
-        {unscheduledTasks.length > 0 && (
+        {focus.unscheduledTasks.length > 0 && (
           <>
             <View style={[styles.sectionHeader, { marginTop: 16 }]}>
               <Text style={styles.sectionTitle}>Not scheduled today</Text>
             </View>
-            {unscheduledTasks.map((task) => (
+            {focus.unscheduledTasks.map((task) => (
               <ScheduleItem
                 key={task.id}
                 title={task.title}
