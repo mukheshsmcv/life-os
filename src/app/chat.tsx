@@ -1,222 +1,376 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
+import { GestureDetector, Gesture } from 'react-native-gesture-handler';
+import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { validateAction } from '@/ai/action-validator';
 import { executeAction } from '@/ai/action-executor';
-import { ChatMessage } from '@/ai/ai-types';
 import { parseIntentWithAI } from '@/ai/ai-client';
+import { AIAction } from '@/ai/ai-types';
 import { useTasks } from '@/contexts/tasks-context';
 import { getTodayString, getCurrentTimeStringIST } from '@/lib/date-time';
 
+import { ChatMessage, ChatMessageData, MessageAction } from '@/components/ChatMessage';
+import { ChatComposer } from '@/components/ChatComposer';
+import { SuggestionChip } from '@/components/SuggestionChip';
+import { ThinkingIndicator } from '@/components/ThinkingIndicator';
+import { EmptyState } from '@/components/EmptyState';
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const SUGGESTION_CHIPS = [
+  "What's next?",
+  'Plan my day',
+  'Free time',
+  'Add task',
+  'Replan evening',
+];
+
+/**
+ * Map an AIAction to a MessageAction card descriptor.
+ * Returns null for informational actions that don't need a card.
+ */
+function actionToCard(action: AIAction): MessageAction | null {
+  switch (action.type) {
+    case 'create_task':
+      return {
+        cardType: 'task_created',
+        title: action.payload.title,
+        durationMinutes: action.payload.durationMinutes,
+        date: action.payload.date ?? null,
+        priority: action.payload.priority,
+      };
+    case 'complete_task':
+      return { cardType: 'task_completed' };
+    case 'skip_task':
+      return { cardType: 'task_skipped' };
+    case 'delete_task':
+      return { cardType: 'task_deleted' };
+    case 'update_task':
+      return { cardType: 'task_updated' };
+    case 'replan_day':
+      return { cardType: 'day_replanned' };
+    case 'clarification':
+      return null;
+    default:
+      return null;
+  }
+}
+
+// ─── Screen ──────────────────────────────────────────────────────────────────
+
 export default function ChatScreen() {
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { tasks, addTask, completeTask, skipTask, deleteTask } = useTasks();
+
   const [input, setInput] = useState('');
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'welcome-1',
-      sender: 'assistant',
-      text: 'Hello Mukhesh! I am your Life OS assistant. How can I help you plan or manage your day?',
-      timestamp: new Date(),
-    },
-  ]);
+  const [isThinking, setIsThinking] = useState(false);
+  const [messages, setMessages] = useState<ChatMessageData[]>([]);
 
   const scrollViewRef = useRef<ScrollView>(null);
 
-  const handleSend = async () => {
-    const userText = input.trim();
-    if (!userText) return;
+  // Auto-scroll when messages change or thinking state changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [messages, isThinking]);
 
-    const userMessage: ChatMessage = {
+  // ─── Send message ───────────────────────────────────────────────────────────
+  const handleSend = async (overrideText?: string) => {
+    const userText = (overrideText ?? input).trim();
+    if (!userText || isThinking) return;
+
+    setInput('');
+    Keyboard.dismiss();
+
+    const userMessage: ChatMessageData = {
       id: `msg-user-${Date.now()}`,
       sender: 'user',
       text: userText,
       timestamp: new Date(),
     };
 
-    setInput('');
-    const newMessages = [...messages, userMessage];
-    setMessages(newMessages);
+    setMessages((prev) => [...prev, userMessage]);
+    setIsThinking(true);
 
-    // Pipeline processing: User Message -> LLM API -> Structured Actions -> Validator -> Executor -> Application State & Scheduler
-    const parseResult = await parseIntentWithAI(userText, {
-      tasks,
-      currentDate: getTodayString(),
-      currentTime: getCurrentTimeStringIST(),
-      timezone: 'Asia/Kolkata',
-    });
-
-    if (!parseResult.success) {
-      const assistantMessage: ChatMessage = {
-        id: `msg-ast-${Date.now()}`,
-        sender: 'assistant',
-        text: parseResult.error,
-        timestamp: new Date(),
-        notice: parseResult.notice,
-      };
-      setMessages([...newMessages, assistantMessage]);
-      return;
-    }
-
-    const assistantReplies: string[] = [];
-
-    for (const action of parseResult.actions) {
-      const validation = validateAction(action, tasks);
-
-      if (!validation.valid) {
-        assistantReplies.push(validation.error);
-        continue;
-      }
-
-      const execution = executeAction(validation.action, {
+    try {
+      const parseResult = await parseIntentWithAI(userText, {
         tasks,
-        operations: { addTask, completeTask, skipTask, deleteTask },
-        currentTime: new Date(),
+        currentDate: getTodayString(),
+        currentTime: getCurrentTimeStringIST(),
+        timezone: 'Asia/Kolkata',
       });
 
-      assistantReplies.push(execution.message);
+      if (!parseResult.success) {
+        const assistantMessage: ChatMessageData = {
+          id: `msg-ast-${Date.now()}`,
+          sender: 'assistant',
+          text: parseResult.error,
+          timestamp: new Date(),
+          notice: parseResult.notice,
+        };
+        setMessages((prev) => [...prev, assistantMessage]);
+        setIsThinking(false);
+        return;
+      }
+
+      // Execute each action and collect results
+      const replyLines: string[] = [];
+      const cards: MessageAction[] = [];
+
+      for (const action of parseResult.actions) {
+        const validation = validateAction(action, tasks);
+
+        if (!validation.valid) {
+          replyLines.push(validation.error);
+          continue;
+        }
+
+        const execution = executeAction(validation.action, {
+          tasks,
+          operations: { addTask, completeTask, skipTask, deleteTask },
+          currentTime: new Date(),
+        });
+
+        replyLines.push(execution.message);
+
+        // Build inline action card from original action (before validation rewrites)
+        const card = actionToCard(action);
+        if (card) {
+          // Enrich with resolved title for ref-based actions
+          if (
+            !card.title &&
+            (action.type === 'complete_task' ||
+              action.type === 'skip_task' ||
+              action.type === 'delete_task')
+          ) {
+            const taskId = validation.resolvedTaskId;
+            const found = tasks.find((t) => t.id === taskId);
+            if (found) card.title = found.title;
+          }
+          cards.push(card);
+        }
+      }
+
+      const assistantMessage: ChatMessageData = {
+        id: `msg-ast-${Date.now()}`,
+        sender: 'assistant',
+        text: replyLines.join('\n\n'),
+        timestamp: new Date(),
+        notice: parseResult.notice,
+        actions: cards.length > 0 ? cards : undefined,
+      };
+
+      setMessages((prev) => [...prev, assistantMessage]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `msg-err-${Date.now()}`,
+          sender: 'assistant',
+          text: 'Something went wrong. Please try again.',
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setIsThinking(false);
     }
-
-    const assistantMessage: ChatMessage = {
-      id: `msg-ast-${Date.now()}`,
-      sender: 'assistant',
-      text: assistantReplies.join('\n\n'),
-      timestamp: new Date(),
-      notice: parseResult.notice,
-    };
-
-    setMessages([...newMessages, assistantMessage]);
   };
 
+  const handleSuggestionChip = (label: string) => {
+    const chipTexts: Record<string, string> = {
+      "What's next?": "What's next on my schedule?",
+      'Plan my day': 'Plan my day',
+      'Free time': 'How much free time do I have today?',
+      'Add task': 'Add a task',
+      'Replan evening': 'Replan my evening',
+    };
+    const text = chipTexts[label] ?? label;
+    handleSend(text);
+  };
+
+  // ─── Left-edge swipe gesture → Calendar ────────────────────────────────────
+  const swipeGesture = Gesture.Pan()
+    .runOnJS(true)
+    .onEnd((event) => {
+      // Only trigger if started near the left edge and had meaningful rightward movement
+      const startX = event.x - event.translationX;
+      const isLeftEdge = startX < 45;
+      const hasRightwardSwipe = event.translationX > 65;
+      const isMoreHorizontalThanVertical =
+        Math.abs(event.translationX) > Math.abs(event.translationY) * 1.4;
+
+      if (isLeftEdge && hasRightwardSwipe && isMoreHorizontalThanVertical) {
+        router.push('/calendar');
+      }
+    });
+
+  const isEmpty = messages.length === 0;
+
+  // Bottom padding: native tab bar on Android is approximately 80px
+  const tabBarHeight = Platform.OS === 'android' ? 80 : 50;
+
   return (
-    <SafeAreaView style={styles.container}>
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}>
-        <View style={styles.header}>
-          <Text style={styles.eyebrow}>AI PLANNER</Text>
-          <Text style={styles.title}>Assistant</Text>
-        </View>
-
-        <ScrollView
-          ref={scrollViewRef}
-          style={styles.messagesContainer}
-          contentContainerStyle={styles.messagesContent}
-          onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}>
-          {messages.map((msg) => (
-            <View key={msg.id} style={{ alignItems: msg.sender === 'user' ? 'flex-end' : 'flex-start' }}>
-              {msg.notice && (
-                <View style={styles.noticeContainer}>
-                  <Text style={styles.noticeText}>{msg.notice}</Text>
-                </View>
-              )}
-              <View
-                style={[
-                  styles.bubble,
-                  msg.sender === 'user' ? styles.userBubble : styles.assistantBubble,
-                ]}>
-                <Text style={msg.sender === 'user' ? styles.userText : styles.assistantText}>
-                  {msg.text}
-                </Text>
-              </View>
-            </View>
-          ))}
-        </ScrollView>
-
-        <View style={styles.inputContainer}>
-          <TextInput
-            value={input}
-            onChangeText={setInput}
-            placeholder="Ask Life OS... (e.g. I completed pharmacology)"
-            placeholderTextColor="#737983"
-            style={styles.input}
-            onSubmitEditing={handleSend}
-            returnKeyType="send"
-          />
-          <Pressable style={styles.sendButton} onPress={handleSend}>
-            <Text style={styles.sendButtonText}>Send</Text>
+    <GestureDetector gesture={swipeGesture}>
+      <View style={styles.container}>
+        {/* ─── Header ─── */}
+        <View style={[styles.header, { paddingTop: Math.max(insets.top, 12) }]}>
+          <View style={styles.headerLeft}>
+            <View style={styles.statusDot} />
+            <Text style={styles.statusText}>{isThinking ? 'Planning' : 'Ready'}</Text>
+          </View>
+          <Text style={styles.headerTitle}>Life OS</Text>
+          <Pressable
+            style={styles.headerRight}
+            onPress={() => router.push('/calendar')}
+            accessibilityLabel="Open Calendar"
+            accessibilityRole="button">
+            <Text style={styles.calendarIcon}>⊞</Text>
           </Pressable>
         </View>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+
+        {/* ─── Keyboard-avoiding container ─── */}
+        <KeyboardAvoidingView
+          style={styles.flex}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'padding'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? tabBarHeight : tabBarHeight}>
+
+          {/* ─── Messages / Empty state ─── */}
+          {isEmpty ? (
+            <View style={styles.flex}>
+              <EmptyState onSelectPrompt={(text) => handleSend(text)} />
+            </View>
+          ) : (
+            <ScrollView
+              ref={scrollViewRef}
+              style={styles.flex}
+              contentContainerStyle={styles.messagesContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              onContentSizeChange={() =>
+                scrollViewRef.current?.scrollToEnd({ animated: false })
+              }>
+              {messages.map((msg) => (
+                <ChatMessage key={msg.id} message={msg} />
+              ))}
+              {isThinking && <ThinkingIndicator />}
+              {/* bottom spacer so last message isn't at the edge */}
+              <View style={styles.bottomSpacer} />
+            </ScrollView>
+          )}
+
+          {/* ─── Suggestion Chips ─── */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.chipsScroll}
+            contentContainerStyle={styles.chipsContent}
+            keyboardShouldPersistTaps="always">
+            {SUGGESTION_CHIPS.map((chip) => (
+              <SuggestionChip
+                key={chip}
+                label={chip}
+                onPress={() => handleSuggestionChip(chip)}
+              />
+            ))}
+          </ScrollView>
+
+          {/* ─── Composer ─── */}
+          <ChatComposer
+            value={input}
+            onChangeText={setInput}
+            onSend={() => handleSend()}
+            disabled={isThinking}
+          />
+        </KeyboardAvoidingView>
+      </View>
+    </GestureDetector>
   );
 }
 
+// ─── Styles ──────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0B0D10' },
+  container: {
+    flex: 1,
+    backgroundColor: '#0B0D10',
+  },
+  flex: { flex: 1 },
+
+  // ── Header ──
   header: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#191C22',
-  },
-  eyebrow: { color: '#A7A0FF', fontSize: 12, fontWeight: '700', letterSpacing: 1.2 },
-  title: { color: '#FFFFFF', fontSize: 28, fontWeight: '700', marginTop: 2 },
-  messagesContainer: { flex: 1 },
-  messagesContent: { padding: 20, gap: 14 },
-  noticeContainer: {
-    backgroundColor: '#261F12',
-    borderWidth: 1,
-    borderColor: '#4A3B18',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    marginBottom: 6,
-    alignSelf: 'flex-start',
-  },
-  noticeText: { color: '#FCD34D', fontSize: 12, fontWeight: '600' },
-  bubble: {
-    maxWidth: '85%',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 18,
-  },
-  assistantBubble: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#171A20',
-    borderTopLeftRadius: 4,
-  },
-  userBubble: {
-    alignSelf: 'flex-end',
-    backgroundColor: '#A7A0FF',
-    borderTopRightRadius: 4,
-  },
-  assistantText: { color: '#E8E9EC', fontSize: 15, lineHeight: 21 },
-  userText: { color: '#0B0D10', fontSize: 15, fontWeight: '600', lineHeight: 21 },
-  inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    padding: 16,
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#191C22',
+    backgroundColor: '#0B0D10',
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 70,
+  },
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#5ECC8B',
+  },
+  statusText: {
+    color: '#5ECC8B',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  headerTitle: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '700',
+    letterSpacing: -0.3,
+  },
+  headerRight: {
+    minWidth: 70,
+    alignItems: 'flex-end',
+  },
+  calendarIcon: {
+    color: '#737983',
+    fontSize: 20,
+  },
+
+  // ── Messages ──
+  messagesContent: {
+    paddingHorizontal: 16,
+    paddingTop: 18,
+    gap: 12,
+  },
+  bottomSpacer: { height: 8 },
+
+  // ── Suggestion chips ──
+  chipsScroll: {
+    flexGrow: 0,
     borderTopWidth: 1,
     borderTopColor: '#191C22',
     backgroundColor: '#0B0D10',
   },
-  input: {
-    flex: 1,
-    backgroundColor: '#171A20',
-    borderRadius: 14,
-    color: '#FFFFFF',
-    fontSize: 15,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+  chipsContent: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    gap: 8,
   },
-  sendButton: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  sendButtonText: { color: '#0B0D10', fontWeight: '700', fontSize: 14 },
 });
