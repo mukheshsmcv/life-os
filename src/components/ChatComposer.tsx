@@ -18,11 +18,24 @@ type Props = {
   onSend: () => void;
   disabled?: boolean;
   placeholder?: string;
+  onVoicePress?: () => void;
+  voiceState?: 'idle' | 'recording' | 'transcribing';
+  voiceError?: string | null;
 };
 
-export function ChatComposer({ value, onChangeText, onSend, disabled, placeholder }: Props) {
+export function ChatComposer({
+  value,
+  onChangeText,
+  onSend,
+  disabled,
+  placeholder,
+  onVoicePress,
+  voiceState = 'idle',
+  voiceError,
+}: Props) {
   const [inputHeight, setInputHeight] = useState(MIN_HEIGHT);
   const canSend = value.trim().length > 0 && !disabled;
+  const voiceDisabled = disabled || voiceState === 'transcribing';
 
   const handleContentSizeChange = (
     e: NativeSyntheticEvent<TextInputContentSizeChangeEventData>
@@ -47,6 +60,22 @@ export function ChatComposer({ value, onChangeText, onSend, disabled, placeholde
           accessibilityLabel="Chat input"
           editable={!disabled}
         />
+        {onVoicePress && (
+          <Pressable
+            style={[
+              styles.voiceButton,
+              voiceState === 'recording' && styles.voiceButtonRecording,
+              voiceDisabled && styles.voiceButtonDisabled,
+            ]}
+            onPress={voiceDisabled ? undefined : onVoicePress}
+            accessibilityRole="button"
+            accessibilityLabel={voiceState === 'recording' ? 'Stop recording' : 'Record voice command'}
+            accessibilityState={{ disabled: voiceDisabled }}>
+            <Text style={styles.voiceText}>
+              {voiceState === 'transcribing' ? '...' : voiceState === 'recording' ? 'Stop' : 'Mic'}
+            </Text>
+          </Pressable>
+        )}
         <Pressable
           style={[styles.sendButton, !canSend && styles.sendButtonDisabled]}
           onPress={canSend ? onSend : undefined}
@@ -56,6 +85,7 @@ export function ChatComposer({ value, onChangeText, onSend, disabled, placeholde
           <Text style={[styles.sendIcon, !canSend && styles.sendIconDisabled]}>↑</Text>
         </Pressable>
       </View>
+      {voiceError && <Text style={styles.voiceError}>{voiceError}</Text>}
     </View>
   );
 }
@@ -105,5 +135,29 @@ const styles = StyleSheet.create({
   },
   sendIconDisabled: {
     color: '#4A5060',
+  },
+  voiceButton: {
+    height: 42,
+    borderRadius: 21,
+    paddingHorizontal: 12,
+    backgroundColor: '#252932',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  voiceButtonRecording: {
+    backgroundColor: '#FF7B7B',
+  },
+  voiceButtonDisabled: {
+    opacity: 0.55,
+  },
+  voiceText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  voiceError: {
+    color: '#FF9A9A',
+    fontSize: 12,
+    paddingTop: 8,
   },
 });

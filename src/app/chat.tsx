@@ -15,11 +15,19 @@ import {
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  AudioModule,
+  RecordingPresets,
+  setAudioModeAsync,
+  useAudioRecorder,
+  useAudioRecorderState,
+} from 'expo-audio';
 
 import { validateAction } from '@/ai/action-validator';
 import { executeAction } from '@/ai/action-executor';
 import { parseIntentWithAI } from '@/ai/ai-client';
 import { AIAction } from '@/ai/ai-types';
+import { transcribeAudio } from '@/ai/voice-client';
 import { useTasks } from '@/contexts/tasks-context';
 import { getTodayString, getCurrentTimeStringIST } from '@/lib/date-time';
 
@@ -84,6 +92,11 @@ export default function ChatScreen() {
 
   const flatListRef = useRef<FlatList<ChatMessageData>>(null);
   const isNearBottomRef = useRef<boolean>(true);
+  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorderState = useAudioRecorderState(audioRecorder);
+  const [microphoneGranted, setMicrophoneGranted] = useState<boolean | null>(null);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
@@ -92,6 +105,34 @@ export default function ChatScreen() {
       layoutMeasurement.height + contentOffset.y >= contentSize.height - paddingToBottom;
     isNearBottomRef.current = isCloseToBottom;
   };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const initializeAudio = async () => {
+      try {
+        const permission = await AudioModule.requestRecordingPermissionsAsync();
+        if (cancelled) return;
+
+        setMicrophoneGranted(permission.granted);
+        if (permission.granted) {
+          await setAudioModeAsync({
+            playsInSilentMode: true,
+            allowsRecording: true,
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setVoiceError(error instanceof Error ? error.message : 'Unable to initialize microphone.');
+        }
+      }
+    };
+
+    void initializeAudio();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleContentSizeChange = () => {
     if (isNearBottomRef.current) {
@@ -223,6 +264,42 @@ export default function ChatScreen() {
     }
   };
 
+  const handleVoicePress = async () => {
+    if (isTranscribing) return;
+    setVoiceError(null);
+
+    if (recorderState.isRecording) {
+      try {
+        await audioRecorder.stop();
+        const recordingUri = audioRecorder.uri;
+        if (!recordingUri) {
+          throw new Error('No audio recording was produced.');
+        }
+
+        setIsTranscribing(true);
+        const transcript = await transcribeAudio(recordingUri);
+        setIsTranscribing(false);
+        await handleSend(transcript);
+      } catch (error) {
+        setIsTranscribing(false);
+        setVoiceError(error instanceof Error ? error.message : 'Voice transcription failed.');
+      }
+      return;
+    }
+
+    if (microphoneGranted !== true) {
+      setVoiceError('Microphone permission is required for voice commands.');
+      return;
+    }
+
+    try {
+      await audioRecorder.prepareToRecordAsync();
+      audioRecorder.record();
+    } catch (error) {
+      setVoiceError(error instanceof Error ? error.message : 'Unable to start recording.');
+    }
+  };
+
   const handleSuggestionChip = (label: string) => {
     const chipTexts: Record<string, string> = {
       "What's next?": "What's next on my schedule?",
@@ -332,6 +409,11 @@ export default function ChatScreen() {
             onChangeText={setInput}
             onSend={() => handleSend()}
             disabled={isThinking}
+            onVoicePress={() => void handleVoicePress()}
+            voiceState={
+              isTranscribing ? 'transcribing' : recorderState.isRecording ? 'recording' : 'idle'
+            }
+            voiceError={voiceError}
           />
         </KeyboardAvoidingView>
       </View>
