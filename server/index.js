@@ -32,7 +32,8 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
-const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+const GROQ_MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
+const GROQ_STT_MODEL = process.env.GROQ_STT_MODEL || 'whisper-large-v3-turbo';
 const GROQ_BASE_URL = process.env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1';
 
 const QWEN_API_KEY = process.env.QWEN_API_KEY || '';
@@ -276,6 +277,74 @@ async function callOpenAICompatible(providerName, apiKey, baseUrl, model, userMe
   return parsed.actions;
 }
 
+function readRequestBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let totalBytes = 0;
+    let settled = false;
+
+    req.on('data', (chunk) => {
+      if (settled) return;
+
+      totalBytes += chunk.length;
+      if (totalBytes > maxBytes) {
+        settled = true;
+        reject(new Error(`Audio upload exceeds the ${Math.floor(maxBytes / (1024 * 1024))} MB limit.`));
+        req.resume();
+        return;
+      }
+
+      chunks.push(chunk);
+    });
+
+    req.on('end', () => {
+      if (!settled) {
+        settled = true;
+        resolve(Buffer.concat(chunks));
+      }
+    });
+
+    req.on('error', (error) => {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+    });
+  });
+}
+
+async function transcribeWithGroq(audioBuffer, contentType, filename) {
+  if (!GROQ_API_KEY) {
+    throw new Error('GROQ_API_KEY is not set; voice transcription is unavailable.');
+  }
+
+  const form = new FormData();
+  form.append('file', new Blob([audioBuffer], { type: contentType }), filename);
+  form.append('model', GROQ_STT_MODEL);
+  form.append('response_format', 'json');
+  form.append('language', 'en');
+
+  const response = await fetch(`${GROQ_BASE_URL}/audio/transcriptions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${GROQ_API_KEY}`,
+    },
+    body: form,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Groq transcription API error (${response.status}): ${errorText}`);
+  }
+
+  const data = await response.json();
+  if (!data || typeof data.text !== 'string' || !data.text.trim()) {
+    throw new Error('Groq transcription API returned no text.');
+  }
+
+  return data.text.trim();
+}
+
 async function callProvider(userMessage, context) {
   switch (AI_PROVIDER) {
     case 'groq':
@@ -291,7 +360,12 @@ async function callProvider(userMessage, context) {
 function getProviderConfig() {
   switch (AI_PROVIDER) {
     case 'groq':
-      return { provider: 'groq', model: GROQ_MODEL, hasApiKey: Boolean(GROQ_API_KEY) };
+      return {
+        provider: 'groq',
+        model: GROQ_MODEL,
+        sttModel: GROQ_STT_MODEL,
+        hasApiKey: Boolean(GROQ_API_KEY),
+      };
     case 'qwen':
       return { provider: 'qwen', model: QWEN_MODEL, hasApiKey: Boolean(QWEN_API_KEY) };
     case 'gemini':
@@ -303,7 +377,7 @@ function getProviderConfig() {
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Audio-Filename');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -315,6 +389,28 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, ...getProviderConfig() }));
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/transcribe') {
+    try {
+      const contentType = req.headers['content-type'] || 'audio/m4a';
+      const filename = req.headers['x-audio-filename'] || 'recording.m4a';
+      const audioBuffer = await readRequestBody(req, 25 * 1024 * 1024);
+      const text = await transcribeWithGroq(audioBuffer, contentType, filename);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, text }));
+    } catch (error) {
+      const errorMessage = error.message || String(error);
+      const statusCode = errorMessage.includes('exceeds the') ? 413 : 500;
+      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: false,
+        errorType: 'TRANSCRIPTION_ERROR',
+        error: errorMessage,
+      }));
+    }
     return;
   }
 
