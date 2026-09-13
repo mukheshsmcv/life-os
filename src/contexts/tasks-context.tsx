@@ -1,4 +1,5 @@
-import { createContext, PropsWithChildren, useContext, useState } from 'react';
+import { createContext, PropsWithChildren, useContext, useEffect, useRef, useState } from 'react';
+import { loadStorageState, saveStorageState } from '@/lib/storage/local-storage';
 
 export type TaskPriority = 'low' | 'medium' | 'high';
 export type TaskStatus = 'pending' | 'completed' | 'skipped';
@@ -31,6 +32,7 @@ type NewTask = Pick<Task, 'title' | 'durationMinutes' | 'priority'> & {
    * Omit (or pass null) to create an undated task.
    */
   date?: string | null;
+  scheduledStartMinute?: number | null;
 };
 
 export type Event = {
@@ -48,7 +50,7 @@ type TasksContextValue = {
   tasks: Task[];
   events: Event[];
   addTask: (task: NewTask) => void;
-  updateTask: (id: string, updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date'>>) => void;
+  updateTask: (id: string, updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date' | 'scheduledStartMinute'>>) => void;
   addEvent: (event: NewEvent) => void;
   completeTask: (id: string) => void;
   skipTask: (id: string) => void;
@@ -119,52 +121,114 @@ export function TasksProvider({ children }: PropsWithChildren) {
   const [tasks, setTasks] = useState<Task[]>(initialTasks);
   const [events, setEvents] = useState<Event[]>(initialEvents);
 
+  const isHydrated = useRef(false);
+  const tasksRef = useRef(tasks);
+  const eventsRef = useRef(events);
+  tasksRef.current = tasks;
+  eventsRef.current = events;
+
+  useEffect(() => {
+    let isMounted = true;
+    async function hydrate() {
+      const restored = await loadStorageState();
+      if (isMounted) {
+        if (restored) {
+          setTasks(restored.tasks);
+          setEvents(restored.events);
+          tasksRef.current = restored.tasks;
+          eventsRef.current = restored.events;
+        }
+        isHydrated.current = true;
+      }
+    }
+    hydrate();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const persist = (nextTasks: Task[], nextEvents: Event[]) => {
+    if (isHydrated.current) {
+      saveStorageState(nextTasks, nextEvents);
+    }
+  };
+
   const updateTaskStatus = (id: string, status: TaskStatus) => {
-    setTasks((currentTasks) =>
-      currentTasks.map((task) => (task.id === id ? { ...task, status } : task))
-    );
+    setTasks((currentTasks) => {
+      const nextTasks = currentTasks.map((task) => (task.id === id ? { ...task, status } : task));
+      tasksRef.current = nextTasks;
+      persist(nextTasks, eventsRef.current);
+      return nextTasks;
+    });
   };
 
   const updateTask = (
     id: string,
-    updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date'>>
+    updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date' | 'scheduledStartMinute'>>
   ) => {
-    setTasks((currentTasks) =>
-      currentTasks.map((task) => (task.id === id ? { ...task, ...updates } : task))
-    );
+    setTasks((currentTasks) => {
+      const nextTasks = currentTasks.map((task) => (task.id === id ? { ...task, ...updates } : task));
+      tasksRef.current = nextTasks;
+      persist(nextTasks, eventsRef.current);
+      return nextTasks;
+    });
   };
 
-  const addTask = ({ title, durationMinutes, priority, date }: NewTask) => {
-    setTasks((currentTasks) => [
-      ...currentTasks,
-      {
-        id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        title,
-        durationMinutes,
-        priority,
-        status: 'pending',
-        scheduledStartMinute: null,
-        date: date ?? null,
-      },
-    ]);
+  const addTask = ({ title, durationMinutes, priority, date, scheduledStartMinute }: NewTask) => {
+    setTasks((currentTasks) => {
+      const nextTasks = [
+        ...currentTasks,
+        {
+          id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          title,
+          durationMinutes,
+          priority,
+          status: 'pending' as const,
+          scheduledStartMinute: scheduledStartMinute ?? null,
+          date: date ?? null,
+        },
+      ];
+      tasksRef.current = nextTasks;
+      persist(nextTasks, eventsRef.current);
+      return nextTasks;
+    });
   };
 
   const addEvent = ({ title, date, startMinute, endMinute, notes }: NewEvent) => {
-    setEvents((currentEvents) => [
-      ...currentEvents,
-      {
-        id: `event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        title,
-        date,
-        startMinute,
-        endMinute,
-        notes,
-      },
-    ]);
+    setEvents((currentEvents) => {
+      const nextEvents = [
+        ...currentEvents,
+        {
+          id: `event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          title,
+          date,
+          startMinute,
+          endMinute,
+          notes,
+        },
+      ];
+      eventsRef.current = nextEvents;
+      persist(tasksRef.current, nextEvents);
+      return nextEvents;
+    });
+  };
+
+  const deleteTask = (id: string) => {
+    setTasks((currentTasks) => {
+      const nextTasks = currentTasks.filter((task) => task.id !== id);
+      tasksRef.current = nextTasks;
+      persist(nextTasks, eventsRef.current);
+      return nextTasks;
+    });
   };
 
   const deleteEvent = (id: string) => {
-    setEvents((currentEvents) => currentEvents.filter((e) => e.id !== id));
+    setEvents((currentEvents) => {
+      const nextEvents = currentEvents.filter((e) => e.id !== id);
+      eventsRef.current = nextEvents;
+      persist(tasksRef.current, nextEvents);
+      return nextEvents;
+    });
   };
 
   const getTasksForDate = (date: string): Task[] => {
