@@ -10,6 +10,7 @@ export type AIParseContext = {
   currentDate?: string;
   currentTime?: string;
   timezone?: string;
+  pendingClarification?: import('./ai-types').PendingClarification | null;
 };
 
 /**
@@ -72,6 +73,7 @@ export async function parseIntentWithAI(
           currentDate: currentDateStr,
           currentTime: currentTimeStr,
           timezone,
+          pendingClarification: context.pendingClarification ?? null,
         },
       }),
     });
@@ -86,7 +88,7 @@ export async function parseIntentWithAI(
 
       console.warn(`${category} Server error at ${endpoint}: ${serverErr}`);
 
-      const mockResult = mockParseIntent(trimmed);
+      const mockResult = mockParseIntent(trimmed, context);
       return {
         ...mockResult,
         mode: 'mock_fallback',
@@ -99,7 +101,7 @@ export async function parseIntentWithAI(
       data = await response.json();
     } catch (parseErr: any) {
       console.warn(`[MALFORMED_RESPONSE] Could not parse JSON from ${endpoint}: ${parseErr.message}`);
-      const mockResult = mockParseIntent(trimmed);
+      const mockResult = mockParseIntent(trimmed, context);
       return {
         ...mockResult,
         mode: 'mock_fallback',
@@ -111,12 +113,13 @@ export async function parseIntentWithAI(
       return {
         success: true,
         actions: data.actions as AIAction[],
+        pendingClarification: data.pendingClarification ?? null,
         mode: 'real_ai',
       };
     }
 
     console.warn(`[MALFORMED_RESPONSE] Server returned missing/invalid "actions" array:`, data);
-    const mockResult = mockParseIntent(trimmed);
+    const mockResult = mockParseIntent(trimmed, context);
     return {
       ...mockResult,
       mode: 'mock_fallback',
@@ -128,7 +131,7 @@ export async function parseIntentWithAI(
 
     console.warn(`[SERVER_UNREACHABLE] Could not connect to AI backend at ${endpoint}: ${reason}`);
 
-    const mockResult = mockParseIntent(trimmed);
+    const mockResult = mockParseIntent(trimmed, context);
     return {
       ...mockResult,
       mode: 'mock_fallback',

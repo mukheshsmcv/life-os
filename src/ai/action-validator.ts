@@ -1,6 +1,7 @@
 import { Task } from '@/contexts/tasks-context';
 import { isValidDateString } from '@/lib/date-time';
 import { AIAction, ValidationResult } from './ai-types';
+import { resolveTaskEntity } from './mock-intent-parser';
 
 export function validateAction(action: AIAction, tasks: Task[]): ValidationResult {
   switch (action.type) {
@@ -107,18 +108,17 @@ export function validateAction(action: AIAction, tasks: Task[]): ValidationResul
         };
       }
 
-      const query = taskTitleQuery.trim().toLowerCase();
-      const matches = tasks.filter((t) => t.title.toLowerCase().includes(query));
+      const matchResult = resolveTaskEntity(taskTitleQuery, tasks);
 
-      if (matches.length === 0) {
+      if (matchResult.type === 'none') {
         return {
           valid: false,
           error: `I couldn't find any task matching "${taskTitleQuery}".`,
         };
       }
 
-      if (matches.length > 1) {
-        const matchNames = matches.map((t) => `"${t.title}"`).join(', ');
+      if (matchResult.type === 'multiple') {
+        const matchNames = matchResult.matches.map((t) => `"${t.title}"`).join(', ');
         return {
           valid: false,
           clarificationNeeded: true,
@@ -126,7 +126,7 @@ export function validateAction(action: AIAction, tasks: Task[]): ValidationResul
         };
       }
 
-      const matchedTask = matches[0];
+      const matchedTask = matchResult.task;
       const updatedAction: AIAction = {
         ...action,
         payload: {
@@ -145,6 +145,15 @@ export function validateAction(action: AIAction, tasks: Task[]): ValidationResul
     case 'replan_day':
     case 'get_schedule':
     case 'get_free_time': {
+      if (action.type === 'get_schedule' || action.type === 'get_free_time') {
+        const d = action.payload?.date;
+        if (d !== undefined && d !== null && !isValidDateString(d)) {
+          return {
+            valid: false,
+            error: `Invalid date "${d}" in schedule query. Date must be in YYYY-MM-DD format.`,
+          };
+        }
+      }
       return { valid: true, action };
     }
 

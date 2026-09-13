@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  FlatList,
   Keyboard,
   KeyboardAvoidingView,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
   Platform,
   Pressable,
   ScrollView,
@@ -72,20 +75,38 @@ function actionToCard(action: AIAction): MessageAction | null {
 export default function ChatScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { tasks, addTask, completeTask, skipTask, deleteTask } = useTasks();
+  const { tasks, addTask, updateTask, completeTask, skipTask, deleteTask } = useTasks();
 
   const [input, setInput] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [messages, setMessages] = useState<ChatMessageData[]>([]);
+  const [pendingClarification, setPendingClarification] = useState<import('@/ai/ai-types').PendingClarification | null>(null);
 
-  const scrollViewRef = useRef<ScrollView>(null);
+  const flatListRef = useRef<FlatList<ChatMessageData>>(null);
+  const isNearBottomRef = useRef<boolean>(true);
 
-  // Auto-scroll when messages change or thinking state changes
+  const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
+    const paddingToBottom = 60;
+    const isCloseToBottom =
+      layoutMeasurement.height + contentOffset.y >= contentSize.height - paddingToBottom;
+    isNearBottomRef.current = isCloseToBottom;
+  };
+
+  const handleContentSizeChange = () => {
+    if (isNearBottomRef.current) {
+      flatListRef.current?.scrollToEnd({ animated: false });
+    }
+  };
+
+  // Auto-scroll when messages change or thinking state changes (only if user is at bottom)
   useEffect(() => {
-    const timer = setTimeout(() => {
-      scrollViewRef.current?.scrollToEnd({ animated: true });
-    }, 80);
-    return () => clearTimeout(timer);
+    if (isNearBottomRef.current) {
+      const timer = setTimeout(() => {
+        flatListRef.current?.scrollToEnd({ animated: true });
+      }, 80);
+      return () => clearTimeout(timer);
+    }
   }, [messages, isThinking]);
 
   // ─── Send message ───────────────────────────────────────────────────────────
@@ -95,6 +116,7 @@ export default function ChatScreen() {
 
     setInput('');
     Keyboard.dismiss();
+    isNearBottomRef.current = true;
 
     const userMessage: ChatMessageData = {
       id: `msg-user-${Date.now()}`,
@@ -105,6 +127,7 @@ export default function ChatScreen() {
 
     setMessages((prev) => [...prev, userMessage]);
     setIsThinking(true);
+    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
 
     try {
       const parseResult = await parseIntentWithAI(userText, {
@@ -112,7 +135,12 @@ export default function ChatScreen() {
         currentDate: getTodayString(),
         currentTime: getCurrentTimeStringIST(),
         timezone: 'Asia/Kolkata',
+        pendingClarification,
       });
+
+      if (parseResult.pendingClarification !== undefined) {
+        setPendingClarification(parseResult.pendingClarification);
+      }
 
       if (!parseResult.success) {
         const assistantMessage: ChatMessageData = {
@@ -141,9 +169,13 @@ export default function ChatScreen() {
 
         const execution = executeAction(validation.action, {
           tasks,
-          operations: { addTask, completeTask, skipTask, deleteTask },
+          operations: { addTask, updateTask, completeTask, skipTask, deleteTask },
           currentTime: new Date(),
         });
+
+        if (execution.success) {
+          setPendingClarification(null);
+        }
 
         replyLines.push(execution.message);
 
@@ -155,7 +187,8 @@ export default function ChatScreen() {
             !card.title &&
             (action.type === 'complete_task' ||
               action.type === 'skip_task' ||
-              action.type === 'delete_task')
+              action.type === 'delete_task' ||
+              action.type === 'update_task')
           ) {
             const taskId = validation.resolvedTaskId;
             const found = tasks.find((t) => t.id === taskId);
@@ -205,6 +238,8 @@ export default function ChatScreen() {
   // ─── Left-edge swipe gesture → Calendar ────────────────────────────────────
   const swipeGesture = Gesture.Pan()
     .runOnJS(true)
+    .activeOffsetX([15, 50])
+    .failOffsetY([-15, 15])
     .onEnd((event) => {
       // Only trigger if started near the left edge and had meaningful rightward movement
       const startX = event.x - event.translationX;
@@ -254,22 +289,25 @@ export default function ChatScreen() {
               <EmptyState onSelectPrompt={(text) => handleSend(text)} />
             </View>
           ) : (
-            <ScrollView
-              ref={scrollViewRef}
+            <FlatList
+              ref={flatListRef}
+              data={messages}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item }) => <ChatMessage message={item} />}
+              ListFooterComponent={
+                <>
+                  {isThinking && <ThinkingIndicator />}
+                  <View style={styles.bottomSpacer} />
+                </>
+              }
               style={styles.flex}
               contentContainerStyle={styles.messagesContent}
               keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-              onContentSizeChange={() =>
-                scrollViewRef.current?.scrollToEnd({ animated: false })
-              }>
-              {messages.map((msg) => (
-                <ChatMessage key={msg.id} message={msg} />
-              ))}
-              {isThinking && <ThinkingIndicator />}
-              {/* bottom spacer so last message isn't at the edge */}
-              <View style={styles.bottomSpacer} />
-            </ScrollView>
+              showsVerticalScrollIndicator={true}
+              onScroll={handleScroll}
+              scrollEventThrottle={16}
+              onContentSizeChange={handleContentSizeChange}
+            />
           )}
 
           {/* ─── Suggestion Chips ─── */}

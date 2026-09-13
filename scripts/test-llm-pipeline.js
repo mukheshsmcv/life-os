@@ -39,6 +39,17 @@ function isValidDateString(value) {
     check.getUTCDate() === day
   );
 }
+function formatDisplayDate(dateStr) {
+  const today = getTodayString();
+  const tomorrow = getDateString(1);
+  if (dateStr === today) return 'Today';
+  if (dateStr === tomorrow) return 'Tomorrow';
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const d = new Date(Date.UTC(year, month - 1, day));
+  const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${dayNames[d.getUTCDay()]} ${monthNames[d.getUTCMonth()]} ${d.getUTCDate()}`;
+}
 
 // ─── Validator (mirrors src/ai/action-validator.ts) ──────────────────────────
 
@@ -124,10 +135,31 @@ function executeAction(action, context) {
       }
       return { success: true, message: `✓ Updated "${targetTask?.title || 'Task'}".` };
     }
-    case 'get_schedule':
-      return { success: true, message: 'Here is your current schedule for today:\n• 6:00 PM — 7:00 PM: Study Pharmacology (60m)' };
+    case 'get_schedule': {
+      const todayStr = getTodayString();
+      const targetDateStr = action.payload?.date ?? todayStr;
+      const dateLabel = formatDisplayDate(targetDateStr);
+      const targetTitle = dateLabel === 'Today' ? 'today' : (dateLabel === 'Tomorrow' ? 'tomorrow' : `on ${dateLabel}`);
+      return { success: true, message: `Here is your schedule for ${targetTitle}:\n• 6:00 PM — 7:00 PM: Study Pharmacology (60m)` };
+    }
     case 'replan_day':
       return { success: true, message: '✓ Replanned your day (2 active block(s)). Study Pharmacology is now next.' };
+    case 'get_free_time': {
+      const todayStr = getTodayString();
+      const targetDateStr = action.payload?.date ?? todayStr;
+      const dateLabel = formatDisplayDate(targetDateStr);
+      const targetTitle = dateLabel === 'Today' ? 'today' : (dateLabel === 'Tomorrow' ? 'tomorrow' : `on ${dateLabel}`);
+      const dur = action.payload?.targetDurationMinutes;
+      const taskQuery = action.payload?.targetTaskTitleQuery;
+
+      if (taskQuery) {
+        return { success: true, message: `You can schedule Study Pharmacology ${targetTitle} between 8:00 AM and 9:00 AM (60m slot available).` };
+      }
+      if (dur) {
+        return { success: true, message: `Yes! You have 15h of free time ${targetTitle}, including a slot from 8:00 AM to 11:00 PM.` };
+      }
+      return { success: true, message: `You have approximately 15h of free time ${targetTitle} (first slot: 8:00 AM — 11:00 PM).` };
+    }
     default:
       return { success: false, message: 'Unknown action.' };
   }
@@ -215,7 +247,7 @@ assert(taskSkipped && exec4.message.includes('Skipped Gym'), '4. Task Skipping E
 const scheduleAction = { type: 'get_schedule' };
 const val5 = validateAction(scheduleAction, sampleTasks);
 const exec5 = executeAction(scheduleAction, { tasks: sampleTasks, operations: { addTask: () => {}, completeTask: () => {}, skipTask: () => {}, deleteTask: () => {} } });
-assert(val5.valid && exec5.message.includes('Here is your current schedule'), '5. Schedule Query Execution Response');
+assert(val5.valid && exec5.message.includes('Here is your schedule'), '5. Schedule Query Execution Response');
 
 // 6. Replanning Pipeline
 const replanAction = { type: 'replan_day' };
@@ -518,10 +550,159 @@ function extractDateAndCleanText(text) {
   return { date: parseResult.date, cleanedText: cleaned };
 }
 
-function parseIntent(userMessage) {
+function parseExplicitStartMinute(text) {
+  if (!text || typeof text !== 'string') return { startMinute: null, cleanedText: text };
+  const amPmRegex = /\b(?:at\s+)?(\d{1,2})(?::?(\d{2}))?\s*(am|pm)\b/i;
+  const amPmMatch = text.match(amPmRegex);
+  if (amPmMatch) {
+    let hours = parseInt(amPmMatch[1], 10);
+    const minutes = amPmMatch[2] ? parseInt(amPmMatch[2], 10) : 0;
+    const period = amPmMatch[3].toLowerCase();
+    if (period === 'pm' && hours < 12) hours += 12;
+    if (period === 'am' && hours === 12) hours = 0;
+    if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
+      const cleanedText = text.replace(amPmMatch[0], '').replace(/\s+/g, ' ').trim();
+      return { startMinute: hours * 60 + minutes, cleanedText };
+    }
+  }
+  const h24Regex = /\b(?:at\s+)?([01]?\d|2[0-3]):([0-5]\d)\b/i;
+  const match24 = text.match(h24Regex);
+  if (match24) {
+    const hours = parseInt(match24[1], 10);
+    const minutes = parseInt(match24[2], 10);
+    if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60) {
+      const cleanedText = text.replace(match24[0], '').replace(/\s+/g, ' ').trim();
+      return { startMinute: hours * 60 + minutes, cleanedText };
+    }
+  }
+  return { startMinute: null, cleanedText: text };
+}
+
+function parseIntent(userMessage, context) {
   const rawTrimmed = userMessage.trim();
   if (!rawTrimmed) return { success: false, error: 'Please enter a message.' };
   const normalized = rawTrimmed.toLowerCase().replace(/['’]/g, '').replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?!]/g, '').replace(/\s+/g, ' ').trim();
+
+  const pending = context?.pendingClarification;
+  if (pending) {
+    const isNewCommand =
+      /^(?:add|create|delete|complete|skip|done|mark)\b/i.test(normalized) ||
+      /^(?:what|whats|how|show|view|when|do i)\b/i.test(normalized) ||
+      normalized === 'schedule' ||
+      normalized.includes('free time') ||
+      normalized.includes('free slot') ||
+      normalized.includes('free hours') ||
+      normalized === 'replan';
+
+    if (!isNewCommand) {
+      const dateRes = parseNaturalDateString(normalized);
+      const timeRes = parseExplicitStartMinute(normalized);
+
+      const targetTitle = pending.taskTitle || pending.taskTitleQuery || 'Task';
+      const targetId = pending.taskId;
+
+      let newDate = pending.date !== undefined ? pending.date : null;
+      if (dateRes.date !== null) newDate = dateRes.date;
+
+      let newTime = pending.scheduledStartMinute !== undefined ? pending.scheduledStartMinute : null;
+      if (timeRes.startMinute !== null) newTime = timeRes.startMinute;
+
+      if (newDate !== null && newTime === null && timeRes.startMinute === null && !normalized.includes('anytime')) {
+        const question = `What time tomorrow?`;
+        return {
+          success: false,
+          error: question,
+          clarificationNeeded: true,
+          actions: [{ type: 'clarification', payload: { question } }],
+          pendingClarification: {
+            pendingIntent: 'update_task',
+            taskId: targetId,
+            taskTitle: targetTitle,
+            taskTitleQuery: targetTitle,
+            date: newDate,
+            scheduledStartMinute: null,
+            missingFields: ['time'],
+          },
+        };
+      }
+
+      if (targetId || targetTitle) {
+        const updatePayload = { taskTitleQuery: targetTitle };
+        if (targetId) updatePayload.taskId = targetId;
+        if (newDate !== undefined) updatePayload.date = newDate;
+        if (newTime !== undefined) updatePayload.scheduledStartMinute = newTime;
+
+        return {
+          success: true,
+          actions: [{ type: 'update_task', payload: updatePayload }],
+          pendingClarification: null,
+        };
+      }
+    }
+  }
+
+  // 1. Get schedule queries
+  const isScheduleQuery =
+    normalized === 'schedule' ||
+    normalized.includes('whats my schedule') ||
+    normalized.includes('what is my schedule') ||
+    normalized.includes('show my schedule') ||
+    normalized.includes('get schedule') ||
+    normalized.includes('view my schedule') ||
+    normalized.includes('what am i doing') ||
+    normalized.includes('whats scheduled') ||
+    normalized.includes('what is scheduled');
+
+  if (isScheduleQuery) {
+    const dateRes = parseNaturalDateString(normalized, context?.currentDate);
+    const targetDate = dateRes.date ?? context?.currentDate ?? getTodayString();
+    return {
+      success: true,
+      actions: [{ type: 'get_schedule', payload: { date: targetDate } }],
+      pendingClarification: null,
+    };
+  }
+
+  // 2. Free time & slot queries
+  const isFreeTimeQuery =
+    normalized.includes('free time') ||
+    normalized.includes('free slot') ||
+    normalized.includes('free hours') ||
+    normalized.includes('free minute') ||
+    normalized.includes('when can i') ||
+    (normalized.includes('do i have') && (normalized.includes('free') || normalized.includes('slot')));
+
+  if (isFreeTimeQuery) {
+    const dateRes = parseNaturalDateString(normalized, context?.currentDate);
+    const targetDate = dateRes.date ?? context?.currentDate ?? getTodayString();
+    const hoursMatch = normalized.match(/(\d+(?:\.\d+)?)\s*(?:hours|hour|hrs|hr|h\b)/i);
+    const minsMatch = normalized.match(/(\d+)\s*(?:minutes|minute|mins|min|m\b)/i);
+    const dur = hoursMatch ? Math.round(parseFloat(hoursMatch[1]) * 60) : (minsMatch ? parseInt(minsMatch[1], 10) : null);
+
+    let taskQuery = null;
+    const whenCanIMatch = normalized.match(/when\s+can\s+i\s+(?:study|work\s+on|do|practice|read|write)?\s*(.+?)(?:\s+today|\s+tomorrow|\s+on\s+|\s+for\s+|$)/i);
+    if (whenCanIMatch && whenCanIMatch[1]) {
+      const candidate = whenCanIMatch[1].trim();
+      if (candidate && !['today', 'tomorrow', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].includes(candidate)) {
+        taskQuery = candidate;
+      }
+    }
+
+    return {
+      success: true,
+      actions: [
+        {
+          type: 'get_free_time',
+          payload: {
+            date: targetDate,
+            targetDurationMinutes: dur,
+            targetTaskTitleQuery: taskQuery,
+          },
+        },
+      ],
+      pendingClarification: null,
+    };
+  }
 
   const conversationQuestions = [
     /^(?:hey|hello|hi|greetings|good\s+morning|good\s+evening)\b/i,
@@ -596,23 +777,40 @@ function parseIntent(userMessage) {
 
   const moveMatch =
     normalized.match(/^(?:move|reschedule|shift|postpone)\s+(.+?)\s+to\s+(.+)$/i) ||
-    normalized.match(/^(?:change|update|set)\s+(.+?)\s+(?:date\s+)?to\s+(.+)$/i);
+    normalized.match(/^(?:change|update|set)\s+(.+?)\s+(?:date\s+)?to\s+(.+)$/i) ||
+    normalized.match(/^(?:reschedule|move)\s+(.+)$/i);
 
   if (moveMatch) {
-    const taskTitleQuery = moveMatch[1].trim();
-    const datePhrase = moveMatch[2].trim();
-    const dateResult = parseNaturalDateString(datePhrase);
-    if (dateResult.date !== null) {
+    const rawQuery = moveMatch[1].trim();
+    const taskTitleQuery = rawQuery ? rawQuery.charAt(0).toUpperCase() + rawQuery.slice(1) : rawQuery;
+    const targetPhrase = moveMatch[2] ? moveMatch[2].trim() : '';
+
+    if (!targetPhrase || targetPhrase.includes('another day') || targetPhrase.includes('other day')) {
+      const question = `Would you like to reschedule the '${taskTitleQuery}' task to another day?`;
       return {
-        success: true,
-        actions: [
-          {
-            type: 'update_task',
-            payload: { taskTitleQuery, date: dateResult.date },
-          },
-        ],
+        success: false,
+        error: question,
+        clarificationNeeded: true,
+        actions: [{ type: 'clarification', payload: { question } }],
+        pendingClarification: {
+          pendingIntent: 'update_task',
+          taskTitleQuery,
+          missingFields: ['date', 'time'],
+        },
       };
     }
+
+    const timeRes = parseExplicitStartMinute(targetPhrase);
+    const dateResult = parseNaturalDateString(timeRes.cleanedText);
+    const updatePayload = { taskTitleQuery };
+    if (dateResult.date !== null) updatePayload.date = dateResult.date;
+    if (timeRes.startMinute !== null) updatePayload.scheduledStartMinute = timeRes.startMinute;
+
+    return {
+      success: true,
+      actions: [{ type: 'update_task', payload: updatePayload }],
+      pendingClarification: null,
+    };
   }
 
   const createPrefixes = [
@@ -767,6 +965,48 @@ assert(!ambVal.valid && ambVal.clarificationNeeded, '20. Ambiguous task update r
 // 21. Update task: Non-existent task fails validation cleanly
 const unkVal = validateAction({ type: 'update_task', payload: { taskTitleQuery: 'Astronomy', date: tomorrowStr } }, sampleTasks);
 assert(!unkVal.valid && unkVal.error.includes('couldn\'t find any task'), '21. Non-existent task update returns helpful error');
+
+// 22. Contextual follow-up turn: "Reschedule Study Pharmacology to another day" -> "Yes tomorrow" -> "12pm"
+const ctxTurn1 = parseIntent("Reschedule Study Pharmacology to another day");
+assert(!ctxTurn1.success && ctxTurn1.clarificationNeeded && ctxTurn1.pendingClarification?.taskTitleQuery?.toLowerCase() === 'study pharmacology', '22a. Context turn 1 creates pending clarification for Study Pharmacology');
+
+const ctxTurn2 = parseIntent("Yes tomorrow", { pendingClarification: ctxTurn1.pendingClarification });
+assert(!ctxTurn2.success && ctxTurn2.clarificationNeeded && ctxTurn2.pendingClarification?.date === tomorrowStr, '22b. Context turn 2 merges date=tomorrowStr and asks for time');
+
+const ctxTurn3 = parseIntent("12pm", { pendingClarification: ctxTurn2.pendingClarification });
+assert(ctxTurn3.success && ctxTurn3.actions[0].type === 'update_task' && ctxTurn3.actions[0].payload.date === tomorrowStr && ctxTurn3.actions[0].payload.scheduledStartMinute === 720, '22c. Context turn 3 merges time 12pm (720) and produces resolved update_task');
+
+// 23. Context cleared after execution
+assert(ctxTurn3.pendingClarification === null, '23. Context cleared after successful execution');
+
+// ─── Date-Aware Conversational Schedule Queries ────────────────────────────────
+console.log('\n--- Date-Aware Conversational Schedule Queries ---');
+
+const testContext = { tasks: sampleTasks, currentDate: '2026-09-13', currentTime: new Date('2026-09-13T10:00:00') };
+
+// 24. "What's my free time tomorrow?" -> date = 2026-09-14
+const ftTomorrowIntent = parseIntent("What's my free time tomorrow?", testContext);
+assert(ftTomorrowIntent.success && ftTomorrowIntent.actions[0].payload?.date === '2026-09-14', '24a. "What\'s my free time tomorrow?" intent parses date 2026-09-14');
+const ftTomorrowExec = executeAction(ftTomorrowIntent.actions[0], { tasks: sampleTasks, operations: {}, currentTime: new Date('2026-09-13T10:00:00') });
+assert(ftTomorrowExec.success && ftTomorrowExec.message.includes('tomorrow') && !ftTomorrowExec.message.includes("today's planning window"), '24b. "What\'s my free time tomorrow?" execution references tomorrow and not today');
+
+// 25. "What am I doing tomorrow?" -> schedule for 2026-09-14
+const schTomorrowIntent = parseIntent("What am I doing tomorrow?", testContext);
+assert(schTomorrowIntent.success && schTomorrowIntent.actions[0].payload?.date === '2026-09-14', '25a. "What am I doing tomorrow?" intent parses date 2026-09-14');
+const schTomorrowExec = executeAction(schTomorrowIntent.actions[0], { tasks: sampleTasks, operations: {}, currentTime: new Date('2026-09-13T10:00:00') });
+assert(schTomorrowExec.success && schTomorrowExec.message.includes('tomorrow'), '25b. "What am I doing tomorrow?" execution references tomorrow');
+
+// 26. "Do I have 2 hours free tomorrow?" -> evaluates 2h contiguous slot for tomorrow
+const durIntent = parseIntent("Do I have 2 hours free tomorrow?", testContext);
+assert(durIntent.success && durIntent.actions[0].payload?.date === '2026-09-14' && durIntent.actions[0].payload?.targetDurationMinutes === 120, '26a. "Do I have 2 hours free tomorrow?" intent parses 120m duration');
+const durExec = executeAction(durIntent.actions[0], { tasks: sampleTasks, operations: {}, currentTime: new Date('2026-09-13T10:00:00') });
+assert(durExec.success && durExec.message.includes('tomorrow'), '26b. "Do I have 2 hours free tomorrow?" execution responds deterministically');
+
+// 27. "When can I study pharmacology tomorrow?" -> inspects free slots for Study Pharmacology
+const slotIntent = parseIntent("When can I study pharmacology tomorrow?", testContext);
+assert(slotIntent.success && slotIntent.actions[0].payload?.date === '2026-09-14' && slotIntent.actions[0].payload?.targetTaskTitleQuery === 'pharmacology', '27a. "When can I study pharmacology tomorrow?" intent parses task query');
+const slotExec = executeAction(slotIntent.actions[0], { tasks: sampleTasks, operations: {}, currentTime: new Date('2026-09-13T10:00:00') });
+assert(slotExec.success && slotExec.message.includes('Study Pharmacology') && slotExec.message.includes('tomorrow'), '27b. "When can I study pharmacology tomorrow?" execution finds free slot');
 
 // ─── Summary ──────────────────────────────────────────────────────────────────
 

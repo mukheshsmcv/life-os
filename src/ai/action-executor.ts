@@ -4,7 +4,7 @@ import {
   scheduleTasks,
   SchedulingSettings,
 } from '@/lib/scheduler';
-import { formatDisplayDate, getTodayString } from '@/lib/date-time';
+import { formatDisplayDate, getTodayString, parseDateString } from '@/lib/date-time';
 import { AIAction, ExecutionResult } from './ai-types';
 
 export type TaskOperations = {
@@ -187,19 +187,38 @@ export function executeAction(
     }
 
     case 'get_schedule': {
-      const schedule = scheduleTasks(context.tasks, settings, currentTime);
+      const todayStr = getTodayString();
+      const targetDateStr = action.payload?.date ?? todayStr;
+      const dateLabel = formatDisplayDate(targetDateStr);
+      const targetTitle = dateLabel === 'Today' ? 'today' : (dateLabel === 'Tomorrow' ? 'tomorrow' : `on ${dateLabel}`);
+
+      const tasksForDate = context.tasks.filter((t) => {
+        if (targetDateStr === todayStr) {
+          return t.date === todayStr || t.date == null;
+        }
+        return t.date === targetDateStr;
+      });
+
+      let refDate: Date;
+      if (targetDateStr === todayStr) {
+        refDate = currentTime;
+      } else {
+        refDate = parseDateString(targetDateStr);
+      }
+
+      const schedule = scheduleTasks(tasksForDate, settings, refDate);
       const taskMap = new Map(context.tasks.map((t) => [t.id, t]));
 
       if (schedule.blocks.length === 0) {
         if (schedule.unscheduledTaskIds.length > 0) {
           return {
             success: true,
-            message: `You have no scheduled activities remaining today, but ${schedule.unscheduledTaskIds.length} task(s) could not fit in the remaining window.`,
+            message: `You have no scheduled activities ${targetTitle}, but ${schedule.unscheduledTaskIds.length} task(s) could not fit in the window.`,
           };
         }
         return {
           success: true,
-          message: 'Your schedule for today is completely clear!',
+          message: `Your schedule for ${targetTitle} is completely clear!`,
         };
       }
 
@@ -208,7 +227,7 @@ export function executeAction(
         return `• ${formatTime(block.start)} — ${formatTime(block.end)}: ${task?.title ?? 'Task'} (${task?.durationMinutes ?? 0}m)`;
       });
 
-      let response = `Here is your current schedule for today:\n\n${scheduleLines.join('\n')}`;
+      let response = `Here is your schedule for ${targetTitle}:\n\n${scheduleLines.join('\n')}`;
 
       if (schedule.unscheduledTaskIds.length > 0) {
         const unscheduledTitles = schedule.unscheduledTaskIds
@@ -236,25 +255,132 @@ export function executeAction(
     }
 
     case 'get_free_time': {
-      const schedule = scheduleTasks(context.tasks, settings, currentTime);
-      const currentMinute = currentTime.getHours() * 60 + currentTime.getMinutes();
-      const startMin = Math.max(settings.planningStartMinute, currentMinute);
+      const todayStr = getTodayString();
+      const targetDateStr = action.payload?.date ?? todayStr;
+      const dateLabel = formatDisplayDate(targetDateStr);
+      const targetTitle = dateLabel === 'Today' ? 'today' : (dateLabel === 'Tomorrow' ? 'tomorrow' : `on ${dateLabel}`);
+
+      const tasksForDate = context.tasks.filter((t) => {
+        if (targetDateStr === todayStr) {
+          return t.date === todayStr || t.date == null;
+        }
+        return t.date === targetDateStr;
+      });
+
+      let refDate: Date;
+      let startMin: number;
+      if (targetDateStr === todayStr) {
+        refDate = currentTime;
+        const currentMinute = currentTime.getHours() * 60 + currentTime.getMinutes();
+        startMin = Math.max(settings.planningStartMinute, currentMinute);
+      } else {
+        refDate = parseDateString(targetDateStr);
+        startMin = settings.planningStartMinute;
+      }
+
       const endMin = settings.planningEndMinute;
       const totalAvailable = Math.max(0, endMin - startMin);
 
+      const schedule = scheduleTasks(tasksForDate, settings, refDate);
       const scheduledMinutes = schedule.blocks.reduce(
         (acc, b) => acc + (b.endMinute - b.startMinute),
         0
       );
       const freeMinutes = Math.max(0, totalAvailable - scheduledMinutes);
 
-      const hours = Math.floor(freeMinutes / 60);
-      const mins = freeMinutes % 60;
-      const formattedFree = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+      const formatMins = (m: number) => {
+        const h = Math.floor(m / 60);
+        const rem = m % 60;
+        if (h > 0 && rem > 0) return `${h}h ${rem}m`;
+        if (h > 0) return `${h}h`;
+        return `${rem}m`;
+      };
+
+      const sortedBlocks = [...schedule.blocks].sort((a, b) => a.startMinute - b.startMinute);
+      type Slot = { startMin: number; endMin: number; duration: number };
+      const freeSlots: Slot[] = [];
+      let currentPointer = startMin;
+
+      for (const block of sortedBlocks) {
+        if (block.startMinute > currentPointer + settings.bufferMinutes) {
+          const gap = block.startMinute - settings.bufferMinutes - currentPointer;
+          if (gap > 0) {
+            freeSlots.push({ startMin: currentPointer, endMin: block.startMinute - settings.bufferMinutes, duration: gap });
+          }
+        }
+        currentPointer = Math.max(currentPointer, block.endMinute + settings.bufferMinutes);
+      }
+      if (currentPointer < endMin) {
+        const gap = endMin - currentPointer;
+        if (gap > 0) {
+          freeSlots.push({ startMin: currentPointer, endMin, duration: gap });
+        }
+      }
+
+      const formatMinToTimeStr = (min: number) => {
+        const h = Math.floor(min / 60);
+        const m = min % 60;
+        const period = h >= 12 ? 'PM' : 'AM';
+        const displayH = h % 12 || 12;
+        const displayM = String(m).padStart(2, '0');
+        return `${displayH}:${displayM} ${period}`;
+      };
+
+      const targetTaskQuery = action.payload?.targetTaskTitleQuery;
+      if (targetTaskQuery) {
+        const matchedTask = tasksForDate.find((t) => t.title.toLowerCase().includes(targetTaskQuery.toLowerCase())) ||
+          context.tasks.find((t) => t.title.toLowerCase().includes(targetTaskQuery.toLowerCase()));
+        const reqDuration = matchedTask ? matchedTask.durationMinutes : (action.payload?.targetDurationMinutes ?? 60);
+        const titleName = matchedTask ? matchedTask.title : targetTaskQuery;
+
+        const fittingSlot = freeSlots.find((s) => s.duration >= reqDuration);
+        if (fittingSlot) {
+          const slotStart = formatMinToTimeStr(fittingSlot.startMin);
+          const slotEnd = formatMinToTimeStr(fittingSlot.startMin + reqDuration);
+          return {
+            success: true,
+            message: `You can schedule ${titleName} ${targetTitle} between ${slotStart} and ${slotEnd} (${reqDuration}m slot available).`,
+          };
+        } else {
+          return {
+            success: true,
+            message: `There are no continuous ${reqDuration}m free slots available ${targetTitle} in your planning window. Total free time is ${formatMins(freeMinutes)}.`,
+          };
+        }
+      }
+
+      const reqDuration = action.payload?.targetDurationMinutes;
+      if (reqDuration && reqDuration > 0) {
+        const fittingSlot = freeSlots.find((s) => s.duration >= reqDuration);
+        if (fittingSlot) {
+          const slotStart = formatMinToTimeStr(fittingSlot.startMin);
+          const slotEnd = formatMinToTimeStr(fittingSlot.endMin);
+          return {
+            success: true,
+            message: `Yes! You have ${formatMins(freeMinutes)} of free time ${targetTitle}, including a slot from ${slotStart} to ${slotEnd}.`,
+          };
+        } else if (freeMinutes >= reqDuration) {
+          return {
+            success: true,
+            message: `You have ${formatMins(freeMinutes)} of total free time ${targetTitle} across shorter gaps, but no single continuous ${formatMins(reqDuration)} block.`,
+          };
+        } else {
+          return {
+            success: true,
+            message: `No, you only have ${formatMins(freeMinutes)} of free time ${targetTitle}.`,
+          };
+        }
+      }
+
+      let slotDetail = '';
+      if (freeSlots.length > 0) {
+        const firstSlot = freeSlots[0];
+        slotDetail = ` (first slot: ${formatMinToTimeStr(firstSlot.startMin)} — ${formatMinToTimeStr(firstSlot.endMin)})`;
+      }
 
       return {
         success: true,
-        message: `You have approximately ${formattedFree} of free time remaining in today's planning window.`,
+        message: `You have approximately ${formatMins(freeMinutes)} of free time ${targetTitle}${slotDetail}.`,
       };
     }
 

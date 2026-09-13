@@ -73,13 +73,31 @@ function buildSystemPrompt(userMessage, context) {
     ? context.tasks.map((t) => `- "${t.title}" (id: ${t.id}, duration: ${t.durationMinutes}m, priority: ${t.priority}, status: ${t.status}, date: ${t.date ?? 'undated'})`).join('\n')
     : 'No tasks existing currently.';
 
+  const pendingClarification = context?.pendingClarification;
+  const pendingSummary = pendingClarification
+    ? `\n=== ACTIVE CONVERSATION CLARIFICATION IN PROGRESS ===
+The assistant previously asked a clarification/confirmation regarding:
+- Intent: ${pendingClarification.pendingIntent || 'update_task'}
+- Target Task ID: "${pendingClarification.taskId || ''}"
+- Target Task Title: "${pendingClarification.taskTitle || pendingClarification.taskTitleQuery || ''}"
+- Preserved Date: ${pendingClarification.date ?? 'none'}
+- Preserved scheduledStartMinute: ${pendingClarification.scheduledStartMinute ?? 'none'}
+
+CRITICAL FOLLOW-UP INSTRUCTIONS:
+1. The user's input "${userMessage}" is a direct follow-up response regarding task "${pendingClarification.taskTitle || pendingClarification.taskId || 'the target task'}".
+2. You MUST set "taskId": "${pendingClarification.taskId || ''}" and/or "taskTitleQuery": "${pendingClarification.taskTitle || pendingClarification.taskTitleQuery || ''}" in any generated action payload (e.g. update_task).
+3. Merge any newly specified date or time (e.g. "Yes to Tuesday at 4 pm", "Tuesday", "4 pm") with preserved values to form an update_task action.
+`
+    : '';
+
   return `You are Life OS's conversational intent parsing agent.
 Your job is to understand user natural language requests and output a JSON array of structured actions.
 
 === CRITICAL PRINCIPLES ===
 
 1. You determine CALENDAR DATE (YYYY-MM-DD) and optional EXPLICIT START TIME (scheduledStartMinute) of a task.
-   - If the user specifies an explicit time (e.g. "at 9 AM", "at 9:30 AM", "at 1 PM", "13:00"), set "scheduledStartMinute" to the minute of day (0-1439). Examples: 9 AM = 540, 9:30 AM = 570, 1 PM = 780, 3 PM = 900.
+   - If the user specifies an explicit time (e.g. "at 9 AM", "at 9:30 AM", "at 12 PM", "at 12 AM", "at 7 PM", "7:30 PM", "12pm", "12am", "7pm"), set "scheduledStartMinute" to the minute of day (0-1439).
+     Examples: 12 AM = 0, 9 AM = 540, 9:30 AM = 570, 12 PM = 720, 1 PM = 780, 6:30 PM = 1110, 7 PM = 1140, 7:30 PM = 1170.
    - If no explicit time is specified (e.g. "Study pathology tomorrow for 2 hours"), omit "scheduledStartMinute" (or set to null) so the task remains flexible for the scheduler.
 
 2. Output ONLY a valid JSON object with the key "actions" containing an array of AIAction objects.
@@ -93,7 +111,7 @@ The user's current date and time (in timezone ${timezone}) are provided below:
   - currentTime: ${currentTime}
   - timezone: ${timezone}
 
-CRITICAL RULES FOR "date" FIELD IN create_task PAYLOAD:
+CRITICAL RULES FOR "date" FIELD IN create_task / update_task PAYLOAD:
 1. When user explicitly specifies "tomorrow" -> set "date": "${tomorrowDate}".
 2. When user explicitly specifies "today" or "tonight" -> set "date": "${currentDate}".
 3. When user specifies another date or day of week (e.g. "Monday", "September 26", "26th September", "2026-09-26") -> set "date" to the calculated YYYY-MM-DD string.
@@ -111,15 +129,16 @@ CRITICAL RULES FOR "date" FIELD IN create_task PAYLOAD:
    - "I need to study anatomy tomorrow morning" -> create_task
    - "Remind me to call mom at 8 PM" -> create_task
 
-=== SCHEDULE QUERY BEHAVIOR ===
+=== SCHEDULE & FREE TIME QUERY BEHAVIOR ===
 
-If the user asks about a specific day's schedule ("What am I doing tomorrow?", "Show me Monday", "What's on the 15th?"):
-- Return a "get_schedule" action. The client knows how to look up tasks by date.
-- Do not attempt to filter tasks yourself.
+If the user asks about a schedule or free time for a day ("What am I doing tomorrow?", "What's my free time tomorrow?", "Do I have 2 hours free Monday?", "When can I study pharmacology tomorrow?"):
+- Set "date" in the payload to the resolved YYYY-MM-DD (e.g. "tomorrow" -> "${tomorrowDate}", "today" -> "${currentDate}").
+- NEVER substitute today's date if the user explicitly requested another day.
+- DO NOT attempt to calculate free-time minutes or write prose schedules yourself—always return a structured "get_schedule" or "get_free_time" action.
 
 === ALLOWED AI ACTIONS & SCHEMA ===
 
-- create_task: { "type": "create_task", "payload": { "title": string, "durationMinutes": number, "priority": "low"|"medium"|"high", "date"?: "YYYY-MM-DD", "scheduledStartMinute"?: number|null } }
+- create_task:  { "type": "create_task", "payload": { "title": string, "durationMinutes": number, "priority": "low"|"medium"|"high", "date"?: "YYYY-MM-DD", "scheduledStartMinute"?: number|null } }
   NOTE: Include "date" ONLY when the user mentions a specific day. Omit it entirely for undated tasks. Include "scheduledStartMinute" ONLY when user specifies an explicit time of day.
 
 - complete_task: { "type": "complete_task", "payload": { "taskTitleQuery": string } }
@@ -127,8 +146,8 @@ If the user asks about a specific day's schedule ("What am I doing tomorrow?", "
 - delete_task:   { "type": "delete_task",   "payload": { "taskTitleQuery": string } }
 - update_task:   { "type": "update_task",   "payload": { "taskTitleQuery": string, "title"?: string, "durationMinutes"?: number, "priority"?: "low"|"medium"|"high", "date"?: string|null, "scheduledStartMinute"?: number|null } }
 - replan_day:    { "type": "replan_day" }
-- get_schedule:  { "type": "get_schedule" }
-- get_free_time: { "type": "get_free_time" }
+- get_schedule:  { "type": "get_schedule",  "payload": { "date"?: string|null } }
+- get_free_time: { "type": "get_free_time", "payload": { "date"?: string|null, "targetDurationMinutes"?: number|null, "targetTaskTitleQuery"?: string|null } }
 - clarification: { "type": "clarification", "payload": { "question": string } }
 
 === CLARIFICATION RULE ===
@@ -141,7 +160,7 @@ DO NOT GUESS. Return a "clarification" action with a polite question.
 Today's date (user's timezone): ${currentDate}
 Current time (user's timezone): ${currentTime}
 Timezone: ${timezone}
-
+${pendingSummary}
 Existing tasks:
 ${tasksSummary}
 
@@ -318,8 +337,51 @@ const server = http.createServer(async (req, res) => {
         }
 
         const actions = await callProvider(userMessage, context);
+
+        const pendingCtx = context?.pendingClarification;
+
+        // Context Injection: ensure taskId & taskTitleQuery are populated from pending context if missing
+        if (pendingCtx && Array.isArray(actions)) {
+          for (const act of actions) {
+            if (['update_task', 'complete_task', 'skip_task', 'delete_task'].includes(act.type)) {
+              if (!act.payload) act.payload = {};
+              if (!act.payload.taskId && pendingCtx.taskId) {
+                act.payload.taskId = pendingCtx.taskId;
+              }
+              if (!act.payload.taskTitleQuery && (pendingCtx.taskTitle || pendingCtx.taskTitleQuery)) {
+                act.payload.taskTitleQuery = pendingCtx.taskTitle || pendingCtx.taskTitleQuery;
+              }
+            }
+          }
+        }
+
+        let pendingClarification = null;
+        if (actions.length > 0 && actions[0].type === 'clarification') {
+          if (pendingCtx) {
+            pendingClarification = pendingCtx;
+          } else if (context?.tasks && Array.isArray(context.tasks)) {
+            const msgLower = (userMessage + ' ' + (actions[0].payload?.question || '')).toLowerCase();
+            const matched = context.tasks.find((t) => {
+              const tLower = t.title.toLowerCase();
+              const words = tLower.split(/\s+/).filter((w) => w.length > 3);
+              return msgLower.includes(tLower) || words.some((w) => msgLower.includes(w));
+            });
+            if (matched) {
+              pendingClarification = {
+                pendingIntent: 'update_task',
+                taskId: matched.id,
+                taskTitle: matched.title,
+                taskTitleQuery: matched.title,
+                date: null,
+                scheduledStartMinute: null,
+                missingFields: ['date', 'time'],
+              };
+            }
+          }
+        }
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, actions, mode: 'real_ai', provider: AI_PROVIDER }));
+        res.end(JSON.stringify({ success: true, actions, pendingClarification, mode: 'real_ai', provider: AI_PROVIDER }));
       } catch (error) {
         const errorMessage = error.message || String(error);
         const isProviderErr = /API error/i.test(errorMessage);

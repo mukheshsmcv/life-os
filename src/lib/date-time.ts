@@ -41,7 +41,13 @@ export function getTodayString(): string {
  * Returns today ± offsetDays as YYYY-MM-DD (IST).
  * e.g. getDateString(1) = tomorrow, getDateString(-1) = yesterday.
  */
-export function getDateString(offsetDays: number): string {
+export function getDateString(offsetDays: number, baseDateStr?: string): string {
+  if (baseDateStr && isValidDateString(baseDateStr)) {
+    const [y, m, d] = baseDateStr.split('-').map(Number);
+    const utcMs = Date.UTC(y, m - 1, d) + offsetDays * 86400_000;
+    const shifted = new Date(utcMs);
+    return toYMD(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, shifted.getUTCDate());
+  }
   const utcMs = Date.now() + IST_OFFSET_MS;
   const shifted = new Date(utcMs + offsetDays * 86400_000);
   return toYMD(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, shifted.getUTCDate());
@@ -140,9 +146,10 @@ export function getCurrentTimeStringIST(): string {
  *
  * Uses pure IST date arithmetic without reliance on JS Date local parsing.
  */
-export function parseNaturalDateString(inputStr: string): { date: string | null; matchedPhrase?: string } {
+export function parseNaturalDateString(inputStr: string, baseDateStr?: string): { date: string | null; matchedPhrase?: string } {
   if (!inputStr || typeof inputStr !== 'string') return { date: null };
   const lower = inputStr.toLowerCase().trim();
+  const todayStr = baseDateStr && isValidDateString(baseDateStr) ? baseDateStr : getTodayString();
 
   // 1. Explicit YYYY-MM-DD
   const ymdMatch = lower.match(/\b(\d{4}-\d{2}-\d{2})\b/);
@@ -153,19 +160,19 @@ export function parseNaturalDateString(inputStr: string): { date: string | null;
   // 2. Relative day: "day after tomorrow"
   if (/\b(?:the\s+)?day\s+after\s+tomorrow\b/i.test(lower)) {
     const matched = lower.match(/\b(?:the\s+)?day\s+after\s+tomorrow\b/i)![0];
-    return { date: getDateString(2), matchedPhrase: matched };
+    return { date: getDateString(2, todayStr), matchedPhrase: matched };
   }
 
   // 3. Relative day: "tomorrow"
   if (/\btomorrow\b/i.test(lower)) {
     const matched = lower.match(/\btomorrow\b/i)![0];
-    return { date: getDateString(1), matchedPhrase: matched };
+    return { date: getDateString(1, todayStr), matchedPhrase: matched };
   }
 
   // 4. Relative day: "today" / "tonight"
   if (/\b(?:today|tonight)\b/i.test(lower)) {
     const matched = lower.match(/\b(?:today|tonight)\b/i)![0];
-    return { date: getTodayString(), matchedPhrase: matched };
+    return { date: todayStr, matchedPhrase: matched };
   }
 
   // 5. Month name + Day number (e.g., "26th September", "26 September", "September 26", "Sep 26", "Sep 26th")
@@ -258,7 +265,6 @@ export function parseNaturalDateString(inputStr: string): { date: string | null;
   const weekdayTermMatch = lower.match(/\b(?:on\s+|for\s+)?(this\s+|next\s+)?(weekdays?|weekday)\b/i);
   if (weekdayTermMatch) {
     const prefix = weekdayTermMatch[1] ? weekdayTermMatch[1].trim().toLowerCase() : '';
-    const todayStr = getTodayString();
     const [y, m, d] = todayStr.split('-').map(Number);
     const todayDate = new Date(Date.UTC(y, m - 1, d));
     const utcDow = todayDate.getUTCDay();
@@ -275,7 +281,7 @@ export function parseNaturalDateString(inputStr: string): { date: string | null;
       else if (currWeekIndex === 6) daysAhead = 2;
       else if (currWeekIndex === 7) daysAhead = 1;
     }
-    return { date: getDateString(daysAhead), matchedPhrase: weekdayTermMatch[0] };
+    return { date: getDateString(daysAhead, todayStr), matchedPhrase: weekdayTermMatch[0] };
   }
 
   // 8. Specific Weekdays ("Monday" .. "Sunday", "this Monday", "next Monday")
@@ -297,7 +303,6 @@ export function parseNaturalDateString(inputStr: string): { date: string | null;
     const targetWeekIndex = weekDowMap[dayName];
 
     if (targetWeekIndex !== undefined) {
-      const todayStr = getTodayString();
       const [y, m, d] = todayStr.split('-').map(Number);
       const todayDate = new Date(Date.UTC(y, m - 1, d));
       const utcDow = todayDate.getUTCDay();
@@ -315,7 +320,7 @@ export function parseNaturalDateString(inputStr: string): { date: string | null;
           daysAhead = (targetWeekIndex - currWeekIndex) + 7;
         }
       }
-      return { date: getDateString(daysAhead), matchedPhrase: weekdayMatch[0] };
+      return { date: getDateString(daysAhead, todayStr), matchedPhrase: weekdayMatch[0] };
     }
   }
 

@@ -55,10 +55,18 @@ export type ReplanDayAction = {
 
 export type GetScheduleAction = {
   type: 'get_schedule';
+  payload?: {
+    date?: string | null;
+  };
 };
 
 export type GetFreeTimeAction = {
   type: 'get_free_time';
+  payload?: {
+    date?: string | null;
+    targetDurationMinutes?: number | null;
+    targetTaskTitleQuery?: string | null;
+  };
 };
 
 export type ClarificationAction = {
@@ -79,9 +87,22 @@ export type AIAction =
   | GetFreeTimeAction
   | ClarificationAction;
 
+export type PendingClarification = {
+  pendingIntent: 'update_task' | 'create_task' | 'complete_task' | 'skip_task' | 'delete_task';
+  taskId?: string;
+  taskTitle?: string;
+  taskTitleQuery?: string;
+  date?: string | null;
+  scheduledStartMinute?: number | null;
+  durationMinutes?: number;
+  priority?: TaskPriority;
+  question?: string;
+  missingFields?: Array<'date' | 'time' | 'task' | 'duration'>;
+};
+
 export type ParseIntentResult =
-  | { success: true; actions: AIAction[]; mode?: 'real_ai' | 'mock_fallback'; notice?: string }
-  | { success: false; error: string; clarificationNeeded?: boolean; mode?: 'real_ai' | 'mock_fallback'; notice?: string };
+  | { success: true; actions: AIAction[]; pendingClarification?: PendingClarification | null; mode?: 'real_ai' | 'mock_fallback'; notice?: string }
+  | { success: false; error: string; clarificationNeeded?: boolean; actions?: AIAction[]; pendingClarification?: PendingClarification | null; mode?: 'real_ai' | 'mock_fallback'; notice?: string };
 
 export type ValidationResult =
   | { valid: true; resolvedTaskId?: string; action: AIAction }
@@ -99,3 +120,4 @@ export type ChatMessage = {
   timestamp: Date;
   notice?: string;
 };
+
