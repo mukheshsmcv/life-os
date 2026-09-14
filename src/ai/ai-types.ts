@@ -9,6 +9,9 @@ export type CreateTaskPayload = {
   date?: string;
   /** Wall-clock minute of day (0-1439), e.g. 540 for 9:00 AM, or null for flexible scheduling */
   scheduledStartMinute?: number | null;
+  scheduling?: CanonicalScheduling;
+  entities?: SemanticEntities;
+  executionRequirement?: ExternalExecutionRequirement;
 };
 
 export type TaskRefPayload = {
@@ -31,6 +34,9 @@ export type UpdateTaskAction = {
     priority?: TaskPriority;
     date?: string | null;
     scheduledStartMinute?: number | null;
+    scheduling?: CanonicalScheduling;
+    entities?: SemanticEntities;
+    executionRequirement?: ExternalExecutionRequirement;
   };
 };
 
@@ -57,6 +63,7 @@ export type GetScheduleAction = {
   type: 'get_schedule';
   payload?: {
     date?: string | null;
+    scope?: 'full' | 'next';
   };
 };
 
@@ -73,10 +80,74 @@ export type ClarificationAction = {
   type: 'clarification';
   payload: {
     question: string;
+    candidateAction?: ActionableAIAction;
   };
 };
 
-export type AIAction =
+export type SemanticEntities = {
+  people?: string[];
+  location?: string;
+  destination?: string;
+  organization?: string;
+  service?: string;
+  provider?: string;
+};
+
+export type SchedulingMode = 'flexible' | 'fixed' | 'deadline' | 'preferred_window';
+
+export type CanonicalScheduling = {
+  mode: SchedulingMode;
+  date?: string | null;
+  startMinute?: number | null;
+  endMinute?: number | null;
+  deadlineMinute?: number | null;
+  durationMinutes?: number | null;
+};
+
+export type ActivityCategory = 
+  | 'task'
+  | 'event'
+  | 'meeting'
+  | 'social'
+  | 'travel'
+  | 'reminder';
+
+export type IntentOperation = 
+  | 'create_activity'
+  | 'update_activity'
+  | 'delete_activity'
+  | 'complete_activity'
+  | 'skip_activity'
+  | 'log_constraint'
+  | 'query_schedule'
+  | 'query_free_time'
+  | 'clarification'
+  | 'context_statement'
+  | 'general_conversation';
+
+export type ExternalExecutionRequirement = 'booking' | 'transport' | 'communication';
+
+export type ProcessIntentPayload = {
+  operation: IntentOperation;
+  targetId?: string;
+  category?: ActivityCategory;
+  title?: string;
+  targetQuery?: string;
+  scheduling?: CanonicalScheduling;
+  entities?: SemanticEntities;
+  priority?: TaskPriority;
+  clarificationQuestion?: string;
+  conversationalResponse?: string;
+  executionRequirement?: ExternalExecutionRequirement;
+};
+
+export type ProcessIntentAction = {
+  type: 'process_intent';
+  payload: ProcessIntentPayload;
+};
+
+export type ActionableAIAction =
+  | ProcessIntentAction
   | CreateTaskAction
   | UpdateTaskAction
   | DeleteTaskAction
@@ -84,11 +155,14 @@ export type AIAction =
   | SkipTaskAction
   | ReplanDayAction
   | GetScheduleAction
-  | GetFreeTimeAction
+  | GetFreeTimeAction;
+
+export type AIAction =
+  | ActionableAIAction
   | ClarificationAction;
 
 export type PendingClarification = {
-  pendingIntent: 'update_task' | 'create_task' | 'complete_task' | 'skip_task' | 'delete_task';
+  pendingIntent: 'update_task' | 'create_task' | 'complete_task' | 'skip_task' | 'delete_task' | 'process_intent';
   taskId?: string;
   taskTitle?: string;
   taskTitleQuery?: string;
@@ -98,6 +172,7 @@ export type PendingClarification = {
   priority?: TaskPriority;
   question?: string;
   missingFields?: Array<'date' | 'time' | 'task' | 'duration'>;
+  candidateAction?: ActionableAIAction;
 };
 
 export type ParseIntentResult =
@@ -110,7 +185,8 @@ export type ValidationResult =
 
 export type ExecutionResult = {
   success: boolean;
-  message: string;
+  message?: string;
+  createdId?: string;
 };
 
 export type ChatMessage = {

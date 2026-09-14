@@ -11,6 +11,7 @@ export type AIParseContext = {
   currentTime?: string;
   timezone?: string;
   pendingClarification?: import('./ai-types').PendingClarification | null;
+  activeActivityId?: string | null;
 };
 
 /**
@@ -58,6 +59,35 @@ export async function parseIntentWithAI(
   const serverBaseUrl = getDevServerBaseUrl();
   const endpoint = `${serverBaseUrl}/api/parse-intent`;
 
+  // --- CONFIRMATION BYPASS LOGIC ---
+  if (context.pendingClarification?.candidateAction) {
+    const isPureConfirmation = /^(yes|yeah|correct|yep|sure|that's right|exactly|do it|ok|okay)\b/i.test(trimmed) &&
+      !/(but|instead|change|make it|move|no\b)/i.test(trimmed);
+
+    if (isPureConfirmation) {
+      return {
+        success: true,
+        actions: [context.pendingClarification.candidateAction],
+        pendingClarification: null,
+        mode: 'real_ai',
+        notice: '✓ Confirmation received. Applying previous intent.',
+      };
+    }
+    
+    const isPureRejection = /^(no|nope|cancel|stop|nevermind|don't)\b/i.test(trimmed) &&
+      !/(mean|meant|instead|make it|change)/i.test(trimmed);
+      
+    if (isPureRejection) {
+       return {
+         success: false,
+         error: 'Action cancelled.',
+         pendingClarification: null,
+         mode: 'real_ai'
+       };
+    }
+  }
+  // ---------------------------------
+
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 9000);
@@ -74,6 +104,7 @@ export async function parseIntentWithAI(
           currentTime: currentTimeStr,
           timezone,
           pendingClarification: context.pendingClarification ?? null,
+          activeActivityId: context.activeActivityId ?? null,
         },
       }),
     });

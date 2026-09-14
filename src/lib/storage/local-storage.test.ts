@@ -57,7 +57,8 @@ export async function runPersistenceTests(): Promise<{ passed: number; failed: n
       priority: 'high',
       status: 'pending', // Pending task with explicit start time for scheduler test
       scheduledStartMinute: 790, // Test 5: scheduledStartMinute (1:10 PM = 790, after 12-1 PM event)
-      date: '2026-09-15', // Test 4: explicit task date
+      date: '2026-09-15',
+      scheduling: { mode: "flexible" as const }, // Test 4: explicit task date
     },
     {
       id: 'task-2',
@@ -67,6 +68,7 @@ export async function runPersistenceTests(): Promise<{ passed: number; failed: n
       status: 'pending',
       scheduledStartMinute: null, // Test 6: flexible task with null scheduledStartMinute
       date: null,
+      scheduling: { mode: "flexible" as const },
     },
     {
       id: 'task-3',
@@ -76,6 +78,7 @@ export async function runPersistenceTests(): Promise<{ passed: number; failed: n
       status: 'completed', // Test 3: completed status survives persistence
       scheduledStartMinute: null,
       date: '2026-09-15',
+      scheduling: { mode: "flexible" as const },
     },
   ];
 
@@ -84,6 +87,7 @@ export async function runPersistenceTests(): Promise<{ passed: number; failed: n
       id: 'event-1',
       title: 'Doctor Appointment',
       date: '2026-09-15',
+      scheduling: { mode: "flexible" as const },
       startMinute: 720, // Test 7: Event start time 12 PM (no overlap with 9 AM task)
       endMinute: 780,   // Test 7: Event end time 1 PM
       notes: 'Checkup',

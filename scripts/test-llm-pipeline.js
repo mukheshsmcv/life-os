@@ -20,7 +20,13 @@ function getTodayString() {
   return toYMD(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
 }
 
-function getDateString(offsetDays) {
+function getDateString(offsetDays, baseDateStr) {
+  if (baseDateStr && isValidDateString(baseDateStr)) {
+    const [y, m, d] = baseDateStr.split('-').map(Number);
+    const utcMs = Date.UTC(y, m - 1, d) + offsetDays * 86400_000;
+    const shifted = new Date(utcMs);
+    return toYMD(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, shifted.getUTCDate());
+  }
   const utcMs = Date.now() + IST_OFFSET_MS;
   const shifted = new Date(utcMs + offsetDays * 86400_000);
   return toYMD(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, shifted.getUTCDate());
@@ -39,9 +45,9 @@ function isValidDateString(value) {
     check.getUTCDate() === day
   );
 }
-function formatDisplayDate(dateStr) {
-  const today = getTodayString();
-  const tomorrow = getDateString(1);
+function formatDisplayDate(dateStr, baseDateStr) {
+  const today = baseDateStr && isValidDateString(baseDateStr) ? baseDateStr : getTodayString();
+  const tomorrow = getDateString(1, today);
   if (dateStr === today) return 'Today';
   if (dateStr === tomorrow) return 'Tomorrow';
   const [year, month, day] = dateStr.split('-').map(Number);
@@ -100,8 +106,22 @@ function validateAction(action, tasks) {
 // ─── Executor (mirrors src/ai/action-executor.ts) ────────────────────────────
 
 function executeAction(action, context) {
-  const todayStr = getTodayString();
+  const baseDateStr = context?.currentTime
+    ? toYMD(context.currentTime.getUTCFullYear(), context.currentTime.getUTCMonth() + 1, context.currentTime.getUTCDate())
+    : (context?.currentDate && isValidDateString(context.currentDate) ? context.currentDate : getTodayString());
+  const todayStr = baseDateStr;
   switch (action.type) {
+    case 'process_intent': {
+      if (action.payload.operation === 'create_activity') {
+        const { title, scheduling, priority } = action.payload;
+        const durationMinutes = scheduling?.durationMinutes ?? 0;
+        const taskDate = scheduling?.date ?? null;
+        context.operations.addTask({ title, durationMinutes, priority, date: taskDate });
+        const dateLabel = taskDate && taskDate !== todayStr ? ` Scheduled for ${taskDate}.` : '';
+        return { success: true, message: `✓ Added "${title}" (${durationMinutes} min, ${priority || 'medium'} priority).${dateLabel}` };
+      }
+      return { success: true, message: `Processed intent.` };
+    }
     case 'create_task': {
       const { title, durationMinutes, priority, date } = action.payload;
       // null/undefined = undated; do NOT default to today
@@ -129,25 +149,36 @@ function executeAction(action, context) {
       return { success: true, message: `✓ Removed ${targetTask?.title || 'Task'} from your plan.` };
     }
     case 'update_task': {
-      const targetTask = context.tasks.find((t) => t.id === action.payload.taskId);
+      const { taskId, title, durationMinutes, priority, date, scheduledStartMinute, scheduling, entities } = action.payload;
+      const targetTask = context.tasks.find((t) => t.id === taskId);
+      if (!targetTask) return { success: false, message: 'not found' };
+      const updates = {};
+      if (title !== undefined) updates.title = title;
+      if (durationMinutes !== undefined) updates.durationMinutes = durationMinutes;
+      if (priority !== undefined) updates.priority = priority;
+      if (date !== undefined) updates.date = date;
+      if (scheduledStartMinute !== undefined) updates.scheduledStartMinute = scheduledStartMinute;
+      if (scheduling !== undefined) {
+         updates.scheduling = { ...targetTask.scheduling, ...scheduling };
+         if (scheduling.startMinute !== undefined) updates.scheduledStartMinute = scheduling.startMinute;
+      }
+      if (entities !== undefined) updates.entities = { ...targetTask.entities, ...entities };
       if (context.operations.updateTask) {
-        context.operations.updateTask(action.payload.taskId, action.payload);
+        context.operations.updateTask(taskId, updates);
       }
       return { success: true, message: `✓ Updated "${targetTask?.title || 'Task'}".` };
     }
     case 'get_schedule': {
-      const todayStr = getTodayString();
       const targetDateStr = action.payload?.date ?? todayStr;
-      const dateLabel = formatDisplayDate(targetDateStr);
+      const dateLabel = formatDisplayDate(targetDateStr, baseDateStr);
       const targetTitle = dateLabel === 'Today' ? 'today' : (dateLabel === 'Tomorrow' ? 'tomorrow' : `on ${dateLabel}`);
       return { success: true, message: `Here is your schedule for ${targetTitle}:\n• 6:00 PM — 7:00 PM: Study Pharmacology (60m)` };
     }
     case 'replan_day':
       return { success: true, message: '✓ Replanned your day (2 active block(s)). Study Pharmacology is now next.' };
     case 'get_free_time': {
-      const todayStr = getTodayString();
       const targetDateStr = action.payload?.date ?? todayStr;
-      const dateLabel = formatDisplayDate(targetDateStr);
+      const dateLabel = formatDisplayDate(targetDateStr, baseDateStr);
       const targetTitle = dateLabel === 'Today' ? 'today' : (dateLabel === 'Tomorrow' ? 'tomorrow' : `on ${dateLabel}`);
       const dur = action.payload?.targetDurationMinutes;
       const taskQuery = action.payload?.targetTaskTitleQuery;
@@ -181,15 +212,43 @@ const sampleTasks = [
 let testsPassed = 0;
 let testsFailed = 0;
 
-function assert(condition, description) {
+function assert(condition, description, actualObj) {
   if (condition) {
     console.log(`✓ PASS: ${description}`);
     testsPassed++;
   } else {
     console.error(`✗ FAIL: ${description}`);
+    if (actualObj) {
+      console.error(`  Actual: ${JSON.stringify(actualObj, null, 2)}`);
+    }
     testsFailed++;
   }
 }
+
+const clientParseIntent = (text, context) => {
+  if (context?.pendingClarification?.candidateAction) {
+    const isPureConfirmation = /^(yes|yeah|correct|yep|sure|that's right|exactly|do it|ok|okay)\b/i.test(text.trim()) &&
+      !/(but|instead|change|make it|move|no\b)/i.test(text.trim());
+    if (isPureConfirmation) {
+      return {
+        success: true,
+        actions: [context.pendingClarification.candidateAction],
+        pendingClarification: null
+      };
+    }
+    const isPureRejection = /^(no|nope|cancel|stop|nevermind|don't)\b/i.test(text.trim()) &&
+      !/(mean|meant|instead|make it|change)/i.test(text.trim());
+      
+    if (isPureRejection) {
+       return {
+         success: false,
+         error: 'Action cancelled.',
+         pendingClarification: null,
+       };
+    }
+  }
+  return parseIntent(text, context);
+};
 
 console.log('--- Starting Life OS LLM Intent Pipeline Test Suite ---\n');
 
@@ -411,9 +470,10 @@ assert(undatedCalSection.length === 1 && undatedCalSection[0].id === 'undated-ta
 
 // ─── Inline natural date parser (mirrors src/lib/date-time.ts) ─────────────
 
-function parseNaturalDateString(inputStr) {
+function parseNaturalDateString(inputStr, baseDateStr) {
   if (!inputStr || typeof inputStr !== 'string') return { date: null };
   const lower = inputStr.toLowerCase().trim();
+  const todayStr = baseDateStr && isValidDateString(baseDateStr) ? baseDateStr : getTodayString();
 
   const ymdMatch = lower.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   if (ymdMatch && isValidDateString(ymdMatch[1])) {
@@ -421,13 +481,13 @@ function parseNaturalDateString(inputStr) {
   }
 
   if (/\b(?:the\s+)?day\s+after\s+tomorrow\b/i.test(lower)) {
-    return { date: getDateString(2), matchedPhrase: lower.match(/\b(?:the\s+)?day\s+after\s+tomorrow\b/i)[0] };
+    return { date: getDateString(2, todayStr), matchedPhrase: lower.match(/\b(?:the\s+)?day\s+after\s+tomorrow\b/i)[0] };
   }
   if (/\btomorrow\b/i.test(lower)) {
-    return { date: getDateString(1), matchedPhrase: lower.match(/\btomorrow\b/i)[0] };
+    return { date: getDateString(1, todayStr), matchedPhrase: lower.match(/\btomorrow\b/i)[0] };
   }
   if (/\b(?:today|tonight)\b/i.test(lower)) {
-    return { date: getTodayString(), matchedPhrase: lower.match(/\b(?:today|tonight)\b/i)[0] };
+    return { date: todayStr, matchedPhrase: lower.match(/\b(?:today|tonight)\b/i)[0] };
   }
 
   const monthsRegexStr = '(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
@@ -440,7 +500,7 @@ function parseNaturalDateString(inputStr) {
     const day = parseInt(matchA[1], 10);
     const month = monthMap[matchA[2].toLowerCase()];
     if (month && day >= 1 && day <= 31) {
-      const [currY, currM, currD] = getTodayString().split('-').map(Number);
+      const [currY, currM, currD] = todayStr.split('-').map(Number);
       let year = currY;
       if (month < currM || (month === currM && day < currD)) year = currY + 1;
       const candidate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
@@ -454,7 +514,7 @@ function parseNaturalDateString(inputStr) {
     const month = monthMap[matchB[1].toLowerCase()];
     const day = parseInt(matchB[2], 10);
     if (month && day >= 1 && day <= 31) {
-      const [currY, currM, currD] = getTodayString().split('-').map(Number);
+      const [currY, currM, currD] = todayStr.split('-').map(Number);
       let year = currY;
       if (month < currM || (month === currM && day < currD)) year = currY + 1;
       const candidate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
@@ -468,7 +528,7 @@ function parseNaturalDateString(inputStr) {
     const month = parseInt(numericMatch[2], 10);
     let year = numericMatch[3] ? parseInt(numericMatch[3], 10) : undefined;
     if (year !== undefined && year < 100) year += 2000;
-    const [currY, currM, currD] = getTodayString().split('-').map(Number);
+    const [currY, currM, currD] = todayStr.split('-').map(Number);
     if (!year) {
       year = currY;
       if (month < currM || (month === currM && day < currD)) year = currY + 1;
@@ -482,7 +542,7 @@ function parseNaturalDateString(inputStr) {
   const weekdayTermMatch = lower.match(/\b(?:on\s+|for\s+)?(this\s+|next\s+)?(weekdays?|weekday)\b/i);
   if (weekdayTermMatch) {
     const prefix = weekdayTermMatch[1] ? weekdayTermMatch[1].trim().toLowerCase() : '';
-    const [y, m, d] = getTodayString().split('-').map(Number);
+    const [y, m, d] = todayStr.split('-').map(Number);
     const utcDow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
     const currWeekIndex = utcDow === 0 ? 7 : utcDow;
 
@@ -497,7 +557,7 @@ function parseNaturalDateString(inputStr) {
       else if (currWeekIndex === 6) daysAhead = 2;
       else if (currWeekIndex === 7) daysAhead = 1;
     }
-    return { date: getDateString(daysAhead), matchedPhrase: weekdayTermMatch[0] };
+    return { date: getDateString(daysAhead, todayStr), matchedPhrase: weekdayTermMatch[0] };
   }
 
   const weekdayMatch = lower.match(/\b(?:on\s+|for\s+)?(this\s+|next\s+)?(monday|mon|tuesday|tue|tues|wednesday|wed|thursday|thu|thur|thurs|friday|fri|saturday|sat|sunday|sun)\b/i);
@@ -507,7 +567,7 @@ function parseNaturalDateString(inputStr) {
     const dayName = weekdayMatch[2].toLowerCase();
     const targetWeekIndex = weekDowMap[dayName];
     if (targetWeekIndex !== undefined) {
-      const [y, m, d] = getTodayString().split('-').map(Number);
+      const [y, m, d] = todayStr.split('-').map(Number);
       const utcDow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
       const currWeekIndex = utcDow === 0 ? 7 : utcDow;
 
@@ -523,21 +583,21 @@ function parseNaturalDateString(inputStr) {
           daysAhead = (targetWeekIndex - currWeekIndex) + 7;
         }
       }
-      return { date: getDateString(daysAhead), matchedPhrase: weekdayMatch[0] };
+      return { date: getDateString(daysAhead, todayStr), matchedPhrase: weekdayMatch[0] };
     }
   }
 
   return { date: null };
 }
 
-function extractDateAndCleanText(text) {
+function extractDateAndCleanText(text, baseDateStr) {
   const unresolvedPatterns = [/\bnext\s+week\b/i, /\bthis\s+week\b/i, /\bnext\s+month\b/i, /\bin\s+\d+\s+(?:days|weeks|months)\b/i, /\bnext\s+next\b/i];
   for (const pattern of unresolvedPatterns) {
     const match = text.match(pattern);
     if (match) return { date: null, cleanedText: text, unresolvedTemporalPhrase: match[0] };
   }
 
-  const parseResult = parseNaturalDateString(text);
+  const parseResult = parseNaturalDateString(text, baseDateStr);
   let cleaned = text;
 
   if (parseResult.matchedPhrase) {
@@ -564,6 +624,15 @@ function parseExplicitStartMinute(text) {
       const cleanedText = text.replace(amPmMatch[0], '').replace(/\s+/g, ' ').trim();
       return { startMinute: hours * 60 + minutes, cleanedText };
     }
+  }
+  const justAtRegex = /\bat\s+([1-9]|1[0-2])\b/i;
+  const justAtMatch = text.match(justAtRegex);
+  if (justAtMatch) {
+    let hours = parseInt(justAtMatch[1], 10);
+    // Assume PM for hours 1 to 5, else AM? Or assume 1 means 13:00.
+    if (hours >= 1 && hours <= 6) hours += 12;
+    const cleanedText = text.replace(justAtMatch[0], '').replace(/\s+/g, ' ').trim();
+    return { startMinute: hours * 60, cleanedText };
   }
   const h24Regex = /\b(?:at\s+)?([01]?\d|2[0-3]):([0-5]\d)\b/i;
   const match24 = text.match(h24Regex);
@@ -813,25 +882,24 @@ function parseIntent(userMessage, context) {
     };
   }
 
+  // 7. Create task patterns
   const createPrefixes = [
-    /^(?:add|create)\s+(?:task\s+)?(.+)$/i,
+    /^(?:add|create|schedule|put)\s+(?:task\s+)?(.+)$/i,
     /^(?:i\s+need\s+to|need\s+to|remind\s+me\s+to|i\s+have\s+to|have\s+to|must|i\s+want\s+to|want\s+to)\s+(.+)$/i,
     /^(?:study|work\s+on|do|practice|read|write|prepare|review)\s+(.+)$/i,
   ];
-
   let createMatch = null;
   for (const prefix of createPrefixes) {
     createMatch = normalized.match(prefix);
     if (createMatch) break;
   }
-
   if (createMatch) {
     const hoursMatch = normalized.match(/(\d+(?:\.\d+)?)\s*(?:hours|hour|hrs|hr|h\b)/i);
     const minsMatch = normalized.match(/(\d+)\s*(?:minutes|minute|mins|min|m\b)/i);
     const durationMinutes = hoursMatch ? Math.round(parseFloat(hoursMatch[1]) * 60) : (minsMatch ? parseInt(minsMatch[1], 10) : null);
     const priority = normalized.includes('high priority') ? 'high' : (normalized.includes('low priority') ? 'low' : 'medium');
     const dateResult = extractDateAndCleanText(normalized);
-
+    
     if (dateResult.unresolvedTemporalPhrase) {
       return {
         success: false,
@@ -840,22 +908,169 @@ function parseIntent(userMessage, context) {
     }
 
     let titleStr = dateResult.cleanedText
-      .replace(/^(add|create)\s+(?:task\s+)?/i, '')
+      .replace(/^(add|create|schedule|put)\s+(?:task\s+)?/i, '')
       .replace(/^(i\s+need\s+to|need\s+to|remind\s+me\s+to|i\s+have\s+to|have\s+to|must|i\s+want\s+to|want\s+to)\s+/i, '')
-      .replace(/(high|medium|low)\s+priority\s*/i, '');
+      .replace(/(high|medium|low)\s+priority\s*/gi, '');
     if (durationMinutes !== null) {
       titleStr = titleStr.replace(/\s+for\s+\d+(?:\.\d+)?\s*(?:hours|hour|hrs|hr|h|minutes|minute|mins|min|m)\b.*/i, '');
     }
-    titleStr = titleStr.trim();
-    const title = titleStr ? titleStr.charAt(0).toUpperCase() + titleStr.slice(1) : titleStr;
-
+    const title = titleStr.trim() ? titleStr.trim().charAt(0).toUpperCase() + titleStr.trim().slice(1) : titleStr.trim();
     const payload = { title, durationMinutes: durationMinutes ?? 0, priority };
     if (dateResult.date) payload.date = dateResult.date;
-
-    return { success: true, actions: [{ type: 'create_task', payload }] };
+    return { success: true, actions: [{ type: 'create_task', payload }], pendingClarification: null };
   }
 
-  return { success: false, error: 'Unrecognized command.' };
+  // 8. General Semantic Intent Parsing
+  let cleaned = normalized;
+  
+  const semanticDateResult = extractDateAndCleanText(cleaned);
+  if (semanticDateResult.unresolvedTemporalPhrase) {
+      return {
+        success: false,
+        error: `Date-aware AI parsing is temporarily unavailable. Unable to resolve date phrase "${semanticDateResult.unresolvedTemporalPhrase}" in basic command mode.`,
+      };
+  }
+
+  // A. Context statement (Availability)
+  if (/^(?:i\s+am|im)\s+free/i.test(cleaned)) {
+    const timeRes = parseExplicitStartMinute(cleaned);
+    const dateResult = extractDateAndCleanText(timeRes.cleanedText);
+    return {
+      success: true,
+      actions: [{
+        type: 'process_intent',
+        payload: {
+          operation: 'context_statement',
+          title: 'availability',
+          scheduling: { mode: 'flexible', date: dateResult.date }
+        }
+      }],
+      pendingClarification: null,
+    };
+  }
+
+  // C. Reject isolated "Yes" / "No" without context
+  if (/^(yes|no|yeah|nope|correct|yep|sure)\b/i.test(cleaned) && cleaned.split(/\s+/).length <= 2) {
+      return { success: false, error: 'I need more context to understand what you mean.' };
+  }
+
+  // B. Entity Extraction
+  const entities = {};
+  
+  const andIMatch = cleaned.match(/^([a-z]+(?:\s+[a-z]+)*?)\s+and\s+i\b/i);
+  if (andIMatch) {
+    const person = andIMatch[1].trim();
+    entities.people = [person.toLowerCase()];
+    cleaned = cleaned.replace(andIMatch[0], ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  const peopleRegex = /\b(?:with|and)\s+([a-z]+(?:\s+[a-z]+)*?)(?=\s+(?:today|tomorrow|on|at|for|in|this|next)|\s*$)/i;
+  const peopleMatch = cleaned.match(peopleRegex);
+  if (peopleMatch) {
+    const person = peopleMatch[1].trim();
+    if (person.length > 2 && !['the'].includes(person.toLowerCase())) {
+      entities.people = [person.toLowerCase()];
+      cleaned = cleaned.replace(peopleMatch[0], ' ').replace(/\s+/g, ' ').trim();
+    }
+  }
+
+  const destRegex = /\b(?:to|for|in|at)\s+(hyderabad|chennai|the\s+airport)\b/i;
+  const destMatch = cleaned.match(destRegex);
+  if (destMatch) {
+    entities.destination = destMatch[1].trim();
+    cleaned = cleaned.replace(destMatch[0], '').replace(/\s+/g, ' ').trim();
+  }
+
+  const timeRes = parseExplicitStartMinute(cleaned);
+  const dateResult = extractDateAndCleanText(timeRes.cleanedText);
+  let finalTitle = dateResult.cleanedText;
+
+  let priority = 'medium';
+  if (/high\s+priority/i.test(finalTitle)) priority = 'high';
+  if (/low\s+priority/i.test(finalTitle)) priority = 'low';
+
+  const durationMatch2 = finalTitle.match(/(\d+(?:\.\d+)?)\s*(?:hours|hour|hrs|hr|h|minutes|minute|mins|min|m)\b/i);
+  let durationMinutes = null;
+  if (durationMatch2) {
+      const isHours = /hour|hr|h/i.test(durationMatch2[0]);
+      durationMinutes = isHours ? Math.round(parseFloat(durationMatch2[1]) * 60) : parseInt(durationMatch2[1], 10);
+  }
+  
+  finalTitle = finalTitle
+    .replace(/^(add|create|schedule|put)\s+(?:task\s+)?/i, '')
+    .replace(/^(i\s+need\s+to|need\s+to|remind\s+me\s+to|i\s+have\s+to|have\s+to|must|i\s+want\s+to|want\s+to)\s+/i, '')
+    .replace(/(high|medium|low)\s+priority\s*/gi, '')
+    .replace(/priority\s+(high|medium|low)\s*/gi, '')
+    .replace(/\s+for\s+\d+(?:\.\d+)?\s*(?:hours|hour|hrs|hr|h|minutes|minute|mins|min|m)\b.*/i, '')
+    .trim();
+
+  let category = 'task';
+  let mode = 'flexible';
+  let executionRequirement = undefined;
+  let operation = 'create_activity';
+
+  if (/\b(?:book|reserve)\b/i.test(finalTitle)) {
+    executionRequirement = 'booking';
+  }
+  if (/\b(?:cab|taxi|uber|flight)\b/i.test(finalTitle)) {
+    executionRequirement = 'transport';
+  }
+
+  if (/\b(?:leave|arrive|be|get\s+me|fly)\b/i.test(finalTitle) && entities.destination) {
+    category = 'travel';
+    mode = 'deadline'; 
+    operation = 'log_constraint';
+  } 
+  else if (/\b(?:lunch|dinner|movie|breakfast)\b/i.test(finalTitle) || entities.people) {
+    category = 'social';
+    if (/\b(?:meeting)\b/i.test(finalTitle)) category = 'meeting';
+    
+    if (timeRes.startMinute !== null) {
+      mode = 'fixed';
+    } else {
+      mode = 'flexible';
+    }
+  }
+  else if (/\b(?:meeting)\b/i.test(finalTitle)) {
+    category = 'meeting';
+    mode = timeRes.startMinute !== null ? 'fixed' : 'flexible';
+  }
+  else if (timeRes.startMinute !== null) {
+    if (/\b(?:gym|study|work)\b/i.test(finalTitle)) {
+      mode = 'preferred_window';
+    } else {
+      mode = 'preferred_window';
+    }
+  }
+  
+  if (/\bremind\b/i.test(normalized)) {
+    category = 'reminder';
+  }
+
+  const title = finalTitle ? finalTitle.charAt(0).toUpperCase() + finalTitle.slice(1) : finalTitle;
+
+  return {
+    success: true,
+    actions: [{
+      type: 'process_intent',
+      payload: {
+        operation,
+        category,
+        title,
+        entities: Object.keys(entities).length > 0 ? entities : undefined,
+        executionRequirement,
+        priority,
+        scheduling: {
+          mode,
+          date: dateResult.date,
+          startMinute: timeRes.startMinute,
+          deadlineMinute: mode === 'deadline' ? timeRes.startMinute : undefined,
+          durationMinutes: durationMinutes
+        }
+      }
+    }],
+    pendingClarification: null,
+  };
 }
 
 assert(getTodayString() === getDateString(0), '28 (Scen 9a). getTodayString() matches getDateString(0)');
@@ -1009,6 +1224,118 @@ const slotExec = executeAction(slotIntent.actions[0], { tasks: sampleTasks, oper
 assert(slotExec.success && slotExec.message.includes('Study Pharmacology') && slotExec.message.includes('tomorrow'), '27b. "When can I study pharmacology tomorrow?" execution finds free slot');
 
 // ─── Summary ──────────────────────────────────────────────────────────────────
+
+// --- AI Architecture Process Intent Tests ---
+console.log('\n--- AI Architecture Process Intent Tests ---');
+
+// 28. Meeting with person + date + exact time
+const meetingPersonIntent = parseIntent("I have a meeting with my friend tomorrow at 4:30 pm", testContext);
+assert(meetingPersonIntent.success && meetingPersonIntent.actions[0].type === 'process_intent' && meetingPersonIntent.actions[0].payload.operation === 'create_activity' && meetingPersonIntent.actions[0].payload.category === 'meeting' && meetingPersonIntent.actions[0].payload.scheduling?.mode === 'fixed' && meetingPersonIntent.actions[0].payload.scheduling?.startMinute === 990, '28. Meeting with person + date + exact time', meetingPersonIntent);
+
+// 29. Meeting with doctor + date + exact time
+const meetingDoctorIntent = parseIntent("I have a meeting with the doctor tomorrow at 4:30 pm", testContext);
+assert(meetingDoctorIntent.success && meetingDoctorIntent.actions[0].type === 'process_intent' && meetingDoctorIntent.actions[0].payload.operation === 'create_activity' && meetingDoctorIntent.actions[0].payload.category === 'meeting' && meetingDoctorIntent.actions[0].payload.scheduling?.mode === 'fixed' && meetingDoctorIntent.actions[0].payload.scheduling?.startMinute === 990, '29. Meeting with doctor + date + exact time', meetingDoctorIntent);
+
+// 30. Lunch with person + date + exact time
+const lunchPersonIntent = parseIntent("Lunch with Rahul tomorrow at 1", testContext);
+assert(lunchPersonIntent.success && lunchPersonIntent.actions[0].type === 'process_intent' && lunchPersonIntent.actions[0].payload.category === 'social' && lunchPersonIntent.actions[0].payload.entities?.people?.includes('rahul') && lunchPersonIntent.actions[0].payload.scheduling?.mode === 'fixed' && lunchPersonIntent.actions[0].payload.scheduling?.startMinute === 780, '30. Lunch with person + date + exact time', lunchPersonIntent);
+
+// 31. Social event
+const socialEventIntent = parseIntent("movie tonight", testContext);
+assert(socialEventIntent.success && socialEventIntent.actions[0].type === 'process_intent' && socialEventIntent.actions[0].payload.category === 'social', '31. Social event', socialEventIntent);
+
+// 32. Flexible activity
+const flexibleActivityIntent = parseIntent("Tomorrow morning gym", testContext);
+assert(flexibleActivityIntent.success && flexibleActivityIntent.actions[0].type === 'process_intent' && flexibleActivityIntent.actions[0].payload.scheduling?.mode === 'flexible', '32. Flexible activity (without exact time)', flexibleActivityIntent);
+
+// =========================================================
+// PART 9: CONVERSATIONAL STATE & ENTITY PRESERVATION
+// =========================================================
+console.log('\n--- PART 9 CONVERSATIONAL STATE TESTS ---');
+
+const part9CtxTasks = [];
+const p9Ops = { 
+  addTask: (t) => { t.id = 'task-narendra'; part9CtxTasks.push(t); }, 
+  updateTask: (id, u) => { const idx = part9CtxTasks.findIndex(t => t.id === id); if(idx>=0) Object.assign(part9CtxTasks[idx], u); },
+  deleteTask: (id) => { const idx = part9CtxTasks.findIndex(t => t.id === id); if(idx>=0) part9CtxTasks.splice(idx,1); }
+};
+
+// A. Exact explicit time and entity preservation
+const p9A = clientParseIntent("I have a meeting with Narendra tomorrow at 4 PM.");
+assert(p9A.success && p9A.actions[0].type === 'process_intent', 'A1. Parses intent');
+const payloadA = p9A.actions[0].payload;
+assert(payloadA.category === 'meeting', 'A2. Category is meeting');
+assert(payloadA.entities.people[0] === 'narendra', 'A3. People includes narendra');
+assert(payloadA.scheduling.date === tomorrowStr, 'A4. Date is tomorrow');
+assert(payloadA.scheduling.mode === 'fixed', 'A5. Mode is fixed');
+assert(payloadA.scheduling.startMinute === 960, 'A6. Start minute is 960 (4 PM)');
+executeAction(p9A.actions[0], { tasks: part9CtxTasks, operations: p9Ops });
+
+// B. Clarification + Pure confirmation bypass
+// We simulate the LLM asking for clarification with the candidate
+const clarificationCandidate = {
+  type: 'process_intent',
+  payload: {
+    operation: 'create_activity',
+    category: 'meeting',
+    entities: { people: ['narendra'] },
+    scheduling: { mode: 'fixed', date: tomorrowStr, startMinute: 960 }
+  }
+};
+const pendingB = {
+  pendingIntent: 'process_intent',
+  candidateAction: clarificationCandidate,
+  question: 'Did you mean you have an appointment tomorrow at 4 PM with Narendra?'
+};
+const p9B = clientParseIntent("Yes, that's right", { pendingClarification: pendingB });
+assert(p9B.success && p9B.actions[0].payload.entities.people[0] === 'narendra', 'B1. Confirmation bypass preserves entity');
+assert(p9B.actions[0].payload.scheduling.startMinute === 960, 'B2. Confirmation bypass preserves exact time');
+// C. Contextual modification (requires LLM parsing, so we mock update parsing)
+executeAction({ type: 'update_task', payload: { taskId: 'task-narendra', scheduling: { startMinute: 1020 } } }, { tasks: part9CtxTasks, operations: p9Ops });
+assert(part9CtxTasks[0].scheduledStartMinute === 1020, 'C1. Executor correctly modifies start time to 5 PM');
+
+// D. Entity modification
+executeAction({ type: 'update_task', payload: { taskId: 'task-narendra', entities: { people: ['rahul'] } } }, { tasks: part9CtxTasks, operations: p9Ops });
+assert(part9CtxTasks[0].entities.people[0] === 'rahul', 'D1. Executor correctly modifies entities without losing others');
+assert(part9CtxTasks[0].scheduledStartMinute === 1020, 'D2. Executor preserved time during entity update');
+
+// E. Natural reference / Delete
+executeAction({ type: 'delete_task', payload: { taskId: 'task-narendra' } }, { tasks: part9CtxTasks, operations: p9Ops });
+assert(part9CtxTasks.length === 0, 'E1. Activity is deleted');
+
+// G. Unknown time: "Meeting with Narendra tomorrow."
+const p9G = clientParseIntent("Meeting with Narendra tomorrow.");
+assert(p9G.success, 'G1. Parses G');
+const payloadG = p9G.actions[0].payload;
+assert(payloadG.scheduling.date === tomorrowStr, 'G2. Date is known');
+assert(payloadG.scheduling.startMinute === null || payloadG.scheduling.startMinute === undefined, 'G3. Time is unknown/null (no 8 AM start)');
+
+// H. Explicit time 4:30 PM
+const p9H = clientParseIntent("Meeting with Narendra tomorrow at 4:30 PM.");
+assert(p9H.success && p9H.actions[0].payload.scheduling.startMinute === 990, 'H1. 4:30 PM parses to 990');
+
+// I. Paraphrases
+const p9I1 = clientParseIntent("Tomorrow at 4 PM I have a meeting with Narendra.");
+const p9I2 = clientParseIntent("Narendra and I have a meeting tomorrow at 4 PM.");
+console.log('p9I2:', JSON.stringify(p9I2, null, 2));
+const p9I3 = clientParseIntent("I've got a meeting with Narendra at 4 PM tomorrow.");
+assert(p9I1.actions[0].payload.scheduling.startMinute === 960 && p9I1.actions[0].payload.entities.people[0] === 'narendra', 'I1. Paraphrase 1 matches semantic structure');
+assert(p9I2.actions[0].payload.scheduling.startMinute === 960 && p9I2.actions[0].payload.entities.people[0] === 'narendra', 'I2. Paraphrase 2 matches semantic structure');
+assert(p9I3.actions[0].payload.scheduling.startMinute === 960 && p9I3.actions[0].payload.entities.people[0] === 'narendra', 'I3. Paraphrase 3 matches semantic structure');
+
+// J. Negative Confirmation Bypass
+const p9J1 = clientParseIntent("No, I meant 5 PM", { pendingClarification: pendingB });
+assert(!p9J1.actions || p9J1.actions[0].type !== 'process_intent' || p9J1.actions[0].payload.scheduling?.startMinute !== 960, 'J1. Negative confirmation with modification does NOT bypass');
+const p9J2 = clientParseIntent("No", { pendingClarification: pendingB });
+assert(p9J2.success === false && p9J2.error === 'Action cancelled.', 'J2. Pure negative confirmation cancels');
+
+// K. Confirmation with modification
+const p9K = clientParseIntent("Yes, but make it 5 PM", { pendingClarification: pendingB });
+assert(!p9K.actions || p9K.actions[0].type !== 'process_intent' || p9K.actions[0].payload.scheduling?.startMinute !== 960, 'K1. Confirmation with modification does NOT bypass');
+
+// L. No pending clarification + confirmation
+const p9L = clientParseIntent("Yes");
+assert(!p9L.actions || p9L.actions.length === 0 || p9L.actions[0].type !== 'process_intent', 'L1. Yes without context does not execute a stale candidate');
 
 console.log(`\n--- TEST SUMMARY: ${testsPassed} Passed, ${testsFailed} Failed ---`);
 if (testsFailed > 0) process.exit(1);

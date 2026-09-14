@@ -225,15 +225,43 @@ function parseIntent(userMessage) {
     }
   }
 
+  const isNextActivityQuery =
+    !normalized.includes('next week') &&
+    !normalized.includes('next month') &&
+    (
+      normalized === 'whats next' ||
+      normalized === 'what is next' ||
+      normalized === 'what next' ||
+      normalized === 'whats next on my schedule' ||
+      normalized === 'what is next on my schedule' ||
+      normalized === 'what am i doing next' ||
+      normalized === 'what do i do next' ||
+      /\b(?:whats|what is)\s+next(?:\s+on\s+my\s+schedule)?\b/i.test(normalized) ||
+      /\bwhat\s+am\s+i\s+doing\s+next\b/i.test(normalized) ||
+      /\bwhat\s+do\s+i\s+do\s+next\b/i.test(normalized)
+    );
+
+  if (isNextActivityQuery) {
+    const dateRes = parseNaturalDateString(normalized);
+    const payload = { scope: 'next' };
+    if (dateRes.date) {
+      payload.date = dateRes.date;
+    }
+    return { success: true, actions: [{ type: 'get_schedule', payload }] };
+  }
+
   if (
     normalized === 'schedule' ||
     normalized.includes('whats my schedule') ||
     normalized.includes('what is my schedule') ||
     normalized.includes('show my schedule') ||
     normalized.includes('get schedule') ||
-    normalized.includes('view my schedule')
+    normalized.includes('view my schedule') ||
+    normalized.includes('what am i doing') ||
+    normalized.includes('whats scheduled') ||
+    normalized.includes('what is scheduled')
   ) {
-    return { success: true, actions: [{ type: 'get_schedule' }] };
+    return { success: true, actions: [{ type: 'get_schedule', payload: { scope: 'full' } }] };
   }
 
   if (
@@ -565,9 +593,18 @@ const tests = [
   { label: 'Intent: complete pharmacology', input: 'complete pharmacology', checkIntent: (res) => res.success && res.actions[0].type === 'complete_task' },
   { label: 'Intent: skip gym', input: 'skip gym', checkIntent: (res) => res.success && res.actions[0].type === 'skip_task' },
   { label: 'Intent: delete study', input: 'delete study', checkIntent: (res) => res.success && res.actions[0].type === 'delete_task' },
-  { label: 'Intent: whats my schedule?', input: "what's my schedule?", checkIntent: (res) => res.success && res.actions[0].type === 'get_schedule' },
+  { label: 'Intent: whats my schedule?', input: "what's my schedule?", checkIntent: (res) => res.success && res.actions[0].type === 'get_schedule' && res.actions[0].payload?.scope === 'full' },
+  { label: 'Intent: show my schedule', input: 'show my schedule', checkIntent: (res) => res.success && res.actions[0].type === 'get_schedule' && res.actions[0].payload?.scope === 'full' },
+  { label: 'Intent: what am I doing today?', input: 'what am I doing today?', checkIntent: (res) => res.success && res.actions[0].type === 'get_schedule' && res.actions[0].payload?.scope === 'full' },
   { label: 'Intent: replan my day', input: 'replan my day', checkIntent: (res) => res.success && res.actions[0].type === 'replan_day' },
   { label: 'Intent: free time', input: "what's my free time?", checkIntent: (res) => res.success && res.actions[0].type === 'get_free_time' },
+
+  // 7. Next Activity Query Tests (BUG 1 Regression)
+  { label: 'Intent: whats next?', input: "what's next?", checkIntent: (res) => res.success && res.actions[0].type === 'get_schedule' && res.actions[0].payload?.scope === 'next' },
+  { label: 'Intent: what is next?', input: 'what is next?', checkIntent: (res) => res.success && res.actions[0].type === 'get_schedule' && res.actions[0].payload?.scope === 'next' },
+  { label: 'Intent: whats next on my schedule?', input: "what's next on my schedule?", checkIntent: (res) => res.success && res.actions[0].type === 'get_schedule' && res.actions[0].payload?.scope === 'next' },
+  { label: 'Intent: what am I doing next?', input: 'what am I doing next?', checkIntent: (res) => res.success && res.actions[0].type === 'get_schedule' && res.actions[0].payload?.scope === 'next' },
+  { label: 'Intent: what do I do next?', input: 'what do I do next?', checkIntent: (res) => res.success && res.actions[0].type === 'get_schedule' && res.actions[0].payload?.scope === 'next' },
 ];
 
 let passed = 0;

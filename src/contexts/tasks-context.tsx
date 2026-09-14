@@ -1,6 +1,8 @@
 import { createContext, PropsWithChildren, useContext, useEffect, useRef, useState } from 'react';
 import { loadStorageState, saveStorageState } from '@/lib/storage/local-storage';
 
+import type { CanonicalScheduling, SemanticEntities, ExternalExecutionRequirement } from '@/ai/ai-types';
+
 export type TaskPriority = 'low' | 'medium' | 'high';
 export type TaskStatus = 'pending' | 'completed' | 'skipped';
 
@@ -10,48 +12,48 @@ export type Task = {
   durationMinutes: number;
   priority: TaskPriority;
   status: TaskStatus;
+  
+  scheduling: CanonicalScheduling;
+  entities?: SemanticEntities;
+  executionRequirement?: ExternalExecutionRequirement;
+
+  // Legacy fields
   scheduledStartMinute: number | null;
-  /**
-   * YYYY-MM-DD when the task is explicitly assigned to a calendar date.
-   * null / undefined means the task is undated — it belongs to no specific day.
-   *
-   * Rules:
-   *  - "Add pharmacology" (no date) → null
-   *  - "Add pharmacology today"     → today's YYYY-MM-DD
-   *  - "Add pharmacology tomorrow"  → tomorrow's YYYY-MM-DD
-   *
-   * The deterministic scheduler may place an undated task into today's schedule,
-   * but that scheduling decision DOES NOT change the task's date field.
-   */
-  date?: string | null;
+  date: string | null;
 };
 
-type NewTask = Pick<Task, 'title' | 'durationMinutes' | 'priority'> & {
-  /**
-   * YYYY-MM-DD to pin the task to a specific calendar day.
-   * Omit (or pass null) to create an undated task.
-   */
+type NewTask = Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'entities' | 'executionRequirement'> & {
   date?: string | null;
   scheduledStartMinute?: number | null;
+  scheduling?: CanonicalScheduling;
 };
 
 export type Event = {
   id: string;
   title: string;
+  
+  scheduling: CanonicalScheduling;
+  entities?: SemanticEntities;
+  executionRequirement?: ExternalExecutionRequirement;
+  notes?: string;
+
+  // Legacy fields
   date: string; // YYYY-MM-DD
   startMinute: number;
   endMinute: number;
-  notes?: string;
 };
 
-export type NewEvent = Omit<Event, 'id'>;
+export type NewEvent = Omit<Event, 'id' | 'scheduling'> & {
+  scheduling?: CanonicalScheduling;
+};
 
 type TasksContextValue = {
   tasks: Task[];
   events: Event[];
-  addTask: (task: NewTask) => void;
-  updateTask: (id: string, updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date' | 'scheduledStartMinute'>>) => void;
-  addEvent: (event: NewEvent) => void;
+  addTask: (task: NewTask) => string;
+  updateTask: (id: string, updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date' | 'scheduledStartMinute' | 'scheduling' | 'entities' | 'executionRequirement'>>) => void;
+  addEvent: (event: NewEvent) => string;
+  updateEvent: (id: string, updates: Partial<Pick<Event, 'title' | 'date' | 'startMinute' | 'endMinute' | 'notes' | 'scheduling' | 'entities' | 'executionRequirement'>>) => void;
   completeTask: (id: string) => void;
   skipTask: (id: string) => void;
   deleteTask: (id: string) => void;
@@ -74,6 +76,7 @@ const initialTasks: Task[] = [
     durationMinutes: 60,
     priority: 'high',
     status: 'pending',
+    scheduling: { mode: 'flexible', date: null, startMinute: 18 * 60, endMinute: 19 * 60 },
     scheduledStartMinute: 18 * 60,
     date: null,
   },
@@ -83,6 +86,7 @@ const initialTasks: Task[] = [
     durationMinutes: 15,
     priority: 'low',
     status: 'pending',
+    scheduling: { mode: 'flexible', date: null, startMinute: 19 * 60 + 10, endMinute: 19 * 60 + 25 },
     scheduledStartMinute: 19 * 60 + 10,
     date: null,
   },
@@ -92,6 +96,7 @@ const initialTasks: Task[] = [
     durationMinutes: 60,
     priority: 'medium',
     status: 'pending',
+    scheduling: { mode: 'flexible', date: null, startMinute: 19 * 60 + 35, endMinute: 20 * 60 + 35 },
     scheduledStartMinute: 19 * 60 + 35,
     date: null,
   },
@@ -101,6 +106,7 @@ const initialTasks: Task[] = [
     durationMinutes: 45,
     priority: 'low',
     status: 'pending',
+    scheduling: { mode: 'flexible', date: null, startMinute: 20 * 60 + 45, endMinute: 21 * 60 + 30 },
     scheduledStartMinute: 20 * 60 + 45,
     date: null,
   },
@@ -110,12 +116,39 @@ const initialTasks: Task[] = [
     durationMinutes: 45,
     priority: 'high',
     status: 'pending',
+    scheduling: { mode: 'flexible', date: null, startMinute: 21 * 60 + 40, endMinute: 22 * 60 + 25 },
     scheduledStartMinute: 21 * 60 + 40,
     date: null,
   },
 ];
 
 const initialEvents: Event[] = [];
+
+function normalizeTask(task: any): Task {
+  if (task.scheduling) return task as Task;
+  return {
+    ...task,
+    scheduling: {
+      mode: 'flexible',
+      date: task.date ?? null,
+      startMinute: task.scheduledStartMinute ?? null,
+      endMinute: task.scheduledStartMinute !== null && task.durationMinutes ? task.scheduledStartMinute + task.durationMinutes : null,
+    }
+  };
+}
+
+function normalizeEvent(ev: any): Event {
+  if (ev.scheduling) return ev as Event;
+  return {
+    ...ev,
+    scheduling: {
+      mode: 'fixed',
+      date: ev.date,
+      startMinute: ev.startMinute,
+      endMinute: ev.endMinute,
+    }
+  };
+}
 
 export function TasksProvider({ children }: PropsWithChildren) {
   const [tasks, setTasks] = useState<Task[]>(initialTasks);
@@ -133,10 +166,12 @@ export function TasksProvider({ children }: PropsWithChildren) {
       const restored = await loadStorageState();
       if (isMounted) {
         if (restored) {
-          setTasks(restored.tasks);
-          setEvents(restored.events);
-          tasksRef.current = restored.tasks;
-          eventsRef.current = restored.events;
+          const normalizedTasks = restored.tasks.map(normalizeTask);
+          const normalizedEvents = restored.events.map(normalizeEvent);
+          setTasks(normalizedTasks);
+          setEvents(normalizedEvents);
+          tasksRef.current = normalizedTasks;
+          eventsRef.current = normalizedEvents;
         }
         isHydrated.current = true;
       }
@@ -164,7 +199,7 @@ export function TasksProvider({ children }: PropsWithChildren) {
 
   const updateTask = (
     id: string,
-    updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date' | 'scheduledStartMinute'>>
+    updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date' | 'scheduledStartMinute' | 'scheduling' | 'entities' | 'executionRequirement'>>
   ) => {
     setTasks((currentTasks) => {
       const nextTasks = currentTasks.map((task) => (task.id === id ? { ...task, ...updates } : task));
@@ -174,16 +209,25 @@ export function TasksProvider({ children }: PropsWithChildren) {
     });
   };
 
-  const addTask = ({ title, durationMinutes, priority, date, scheduledStartMinute }: NewTask) => {
+  const addTask = ({ title, durationMinutes, priority, date, scheduledStartMinute, scheduling, entities, executionRequirement }: NewTask): string => {
+    const id = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setTasks((currentTasks) => {
       const nextTasks = [
         ...currentTasks,
         {
-          id: `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          id,
           title,
           durationMinutes,
           priority,
           status: 'pending' as const,
+          scheduling: scheduling ?? {
+            mode: 'flexible',
+            date: date ?? null,
+            startMinute: scheduledStartMinute ?? null,
+            endMinute: scheduledStartMinute !== null && scheduledStartMinute !== undefined ? scheduledStartMinute + durationMinutes : null,
+          },
+          entities,
+          executionRequirement,
           scheduledStartMinute: scheduledStartMinute ?? null,
           date: date ?? null,
         },
@@ -192,21 +236,44 @@ export function TasksProvider({ children }: PropsWithChildren) {
       persist(nextTasks, eventsRef.current);
       return nextTasks;
     });
+    return id;
   };
 
-  const addEvent = ({ title, date, startMinute, endMinute, notes }: NewEvent) => {
+  const addEvent = ({ title, date, startMinute, endMinute, notes, scheduling, entities, executionRequirement }: NewEvent): string => {
+    const id = `evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setEvents((currentEvents) => {
       const nextEvents = [
         ...currentEvents,
         {
-          id: `event-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          id,
           title,
-          date,
-          startMinute,
-          endMinute,
+          scheduling: scheduling ?? {
+            mode: 'fixed',
+            date: date ?? '',
+            startMinute: startMinute ?? 0,
+            endMinute: endMinute ?? 0,
+          },
+          entities,
+          executionRequirement,
+          date: date ?? '',
+          startMinute: startMinute ?? 0,
+          endMinute: endMinute ?? 0,
           notes,
         },
       ];
+      eventsRef.current = nextEvents;
+      persist(tasksRef.current, nextEvents);
+      return nextEvents;
+    });
+    return id;
+  };
+
+  const updateEvent = (
+    id: string,
+    updates: Partial<Pick<Event, 'title' | 'date' | 'startMinute' | 'endMinute' | 'notes' | 'scheduling' | 'entities' | 'executionRequirement'>>
+  ) => {
+    setEvents((currentEvents) => {
+      const nextEvents = currentEvents.map((evt) => (evt.id === id ? { ...evt, ...updates } : evt));
       eventsRef.current = nextEvents;
       persist(tasksRef.current, nextEvents);
       return nextEvents;
@@ -232,11 +299,11 @@ export function TasksProvider({ children }: PropsWithChildren) {
   };
 
   const getTasksForDate = (date: string): Task[] => {
-    return tasks.filter((task) => task.date === date);
+    return tasks.filter((task) => task.scheduling.date === date || task.date === date);
   };
 
   const getEventsForDate = (date: string): Event[] => {
-    return events.filter((event) => event.date === date);
+    return events.filter((event) => event.scheduling.date === date || event.date === date);
   };
 
   const value: TasksContextValue = {
@@ -245,6 +312,7 @@ export function TasksProvider({ children }: PropsWithChildren) {
     addTask,
     updateTask,
     addEvent,
+    updateEvent,
     completeTask: (id: string) => updateTaskStatus(id, 'completed'),
     skipTask: (id: string) => updateTaskStatus(id, 'skipped'),
     deleteTask: (id: string) =>

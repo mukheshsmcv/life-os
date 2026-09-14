@@ -226,6 +226,6 @@ export function scheduleTasks(
       start: toDate(currentDate, block.startMinute),
       end: toDate(currentDate, block.endMinute),
     })),
-    unscheduledTaskIds,
+    unscheduledTaskIds: Array.from(new Set(unscheduledTaskIds)),
   };
 }

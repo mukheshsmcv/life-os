@@ -70,6 +70,9 @@ export async function loadStorageState(): Promise<{ tasks: Task[]; events: Event
           status: t.status,
           scheduledStartMinute: t.scheduledStartMinute ?? null,
           date: t.date ?? null,
+          scheduling: t.scheduling || { mode: 'flexible', date: t.date ?? null, startMinute: t.scheduledStartMinute ?? null },
+          entities: t.entities,
+          executionRequirement: t.executionRequirement,
         });
       }
     }
@@ -84,6 +87,9 @@ export async function loadStorageState(): Promise<{ tasks: Task[]; events: Event
           startMinute: e.startMinute,
           endMinute: e.endMinute,
           notes: e.notes ?? undefined,
+          scheduling: e.scheduling || { mode: 'fixed', date: e.date, startMinute: e.startMinute, endMinute: e.endMinute },
+          entities: e.entities,
+          executionRequirement: e.executionRequirement,
         });
       }
     }
