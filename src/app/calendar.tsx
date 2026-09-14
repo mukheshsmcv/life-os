@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'expo-router';
 import {
+  FlatList,
   Modal,
   Pressable,
   ScrollView,
@@ -12,16 +13,15 @@ import {
   Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SymbolView } from 'expo-symbols';
 
 import { Event, Task, useTasks } from '@/contexts/tasks-context';
-import { formatDisplayDate, getDateString, getTodayString, getCalendarDays, addMonths } from '@/lib/date-time';
+import { formatDisplayDate, getDateString, getTodayString, getCalendarDays, addMonths, addDays } from '@/lib/date-time';
 import { DEFAULT_SCHEDULING_SETTINGS, scheduleTasks } from '@/lib/scheduler';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function pad(n: number): string {
-  return String(n).padStart(2, '0');
-}
+function pad(n: number): string { return String(n).padStart(2, '0'); }
 
 function minutesToDisplay(totalMins: number): string {
   const hours = Math.floor(totalMins / 60);
@@ -31,33 +31,6 @@ function minutesToDisplay(totalMins: number): string {
   return `${displayHours}:${pad(mins)} ${period}`;
 }
 
-function dateToMinutes(date: Date): number {
-  return date.getHours() * 60 + date.getMinutes();
-}
-
-function formatBlockTime(date: Date): string {
-  const h = date.getHours();
-  const m = date.getMinutes();
-  const period = h >= 12 ? 'PM' : 'AM';
-  return `${h % 12 || 12}:${pad(m)} ${period}`;
-}
-
-function formatDuration(minutes: number): string {
-  if (minutes < 60) return `${minutes}m`;
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return m > 0 ? `${h}h ${m}m` : `${h}h`;
-}
-
-type ScheduledItem = Task & {
-  start: Date;
-  end: Date;
-  startMinute: number;
-  endMinute: number;
-};
-
-// ─── Time Input ──────────────────────────────────────────────────────────────
-
 type TimeVal = { h: string; m: string; isPM: boolean };
 
 function TimeInput({ value, onChange, label }: { value: TimeVal; onChange: (v: TimeVal) => void; label: string }) {
@@ -66,27 +39,17 @@ function TimeInput({ value, onChange, label }: { value: TimeVal; onChange: (v: T
       <Text style={ti.label}>{label}</Text>
       <View style={ti.row}>
         <TextInput
-          style={ti.input}
-          keyboardType="number-pad"
-          maxLength={2}
-          value={value.h}
-          onChangeText={(h) => onChange({ ...value, h })}
-          placeholder="12"
-          placeholderTextColor="#4A5060"
+          style={ti.input} keyboardType="number-pad" maxLength={2}
+          value={value.h} onChangeText={(h) => onChange({ ...value, h })}
+          placeholder="12" placeholderTextColor="#4A5060"
         />
         <Text style={ti.colon}>:</Text>
         <TextInput
-          style={ti.input}
-          keyboardType="number-pad"
-          maxLength={2}
-          value={value.m}
-          onChangeText={(m) => onChange({ ...value, m })}
-          placeholder="00"
-          placeholderTextColor="#4A5060"
+          style={ti.input} keyboardType="number-pad" maxLength={2}
+          value={value.m} onChangeText={(m) => onChange({ ...value, m })}
+          placeholder="00" placeholderTextColor="#4A5060"
         />
-        <Pressable
-          style={ti.amPmBtn}
-          onPress={() => onChange({ ...value, isPM: !value.isPM })}>
+        <Pressable style={ti.amPmBtn} onPress={() => onChange({ ...value, isPM: !value.isPM })}>
           <Text style={ti.amPmText}>{value.isPM ? 'PM' : 'AM'}</Text>
         </Pressable>
       </View>
@@ -98,131 +61,265 @@ const ti = StyleSheet.create({
   container: { marginBottom: 16 },
   label: { color: '#A7A0FF', fontSize: 11, fontWeight: '700', marginBottom: 8, letterSpacing: 1.2 },
   row: { flexDirection: 'row', alignItems: 'center' },
-  input: {
-    backgroundColor: '#1E2228',
-    color: '#E8E9EC',
-    fontSize: 16,
-    fontWeight: '600',
-    borderRadius: 8,
-    width: 48,
-    height: 48,
-    textAlign: 'center',
-  },
+  input: { backgroundColor: '#1E2228', color: '#E8E9EC', fontSize: 16, fontWeight: '600', borderRadius: 8, width: 48, height: 48, textAlign: 'center' },
   colon: { color: '#737983', fontSize: 18, fontWeight: '700', marginHorizontal: 8 },
-  amPmBtn: {
-    marginLeft: 12,
-    backgroundColor: '#252932',
-    borderRadius: 8,
-    width: 48,
-    height: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+  amPmBtn: { marginLeft: 12, backgroundColor: '#252932', borderRadius: 8, width: 48, height: 48, alignItems: 'center', justifyContent: 'center' },
   amPmText: { color: '#E8E9EC', fontSize: 13, fontWeight: '700' },
 });
 
-// ─── Main Calendar Modal ──────────────────────────────────────────────────────
+// Fallback vector-drawn calendar icon component
+function CalendarFallbackIcon({ color = '#A7A0FF' }: { color?: string }) {
+  return (
+    <View style={{ width: 22, height: 22, alignItems: 'center', justifyContent: 'center' }}>
+      {/* Top rings/pins */}
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', width: 14, marginBottom: -2, zIndex: 1 }}>
+        <View style={{ width: 2, height: 4, backgroundColor: color, borderRadius: 1 }} />
+        <View style={{ width: 2, height: 4, backgroundColor: color, borderRadius: 1 }} />
+      </View>
+      {/* Calendar body */}
+      <View style={{ width: 20, height: 18, borderWidth: 1.5, borderColor: color, borderRadius: 4, overflow: 'hidden' }}>
+        {/* Top header strip */}
+        <View style={{ height: 4, backgroundColor: color, width: '100%' }} />
+        {/* Inner grid dots */}
+        <View style={{ flex: 1, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-evenly', alignItems: 'center', padding: 2 }}>
+          <View style={{ width: 2, height: 2, borderRadius: 1, backgroundColor: color }} />
+          <View style={{ width: 2, height: 2, borderRadius: 1, backgroundColor: color }} />
+          <View style={{ width: 2, height: 2, borderRadius: 1, backgroundColor: color }} />
+          <View style={{ width: 2, height: 2, borderRadius: 1, backgroundColor: color }} />
+          <View style={{ width: 2, height: 2, borderRadius: 1, backgroundColor: color }} />
+          <View style={{ width: 2, height: 2, borderRadius: 1, backgroundColor: color }} />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ─── Main Calendar Screen ─────────────────────────────────────────────────────
 
 export default function CalendarScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { tasks, events, getEventsForDate, addEvent, completeTask, skipTask, deleteTask, deleteEvent } = useTasks();
+  const { tasks, events, addEvent } = useTasks();
   
   const todayStr = getTodayString();
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
-  const [viewMonth, setViewMonth] = useState<string>(todayStr.substring(0, 7) + '-01');
-  const [now, setNow] = useState(() => new Date());
 
+  const [dateStripCenter, setDateStripCenter] = useState<string>(todayStr);
+  
+  const [showMonthPicker, setShowMonthPicker] = useState(false);
+  const [pickerMonth, setPickerMonth] = useState<string>(todayStr.substring(0, 7) + '-01');
+  
   const [showBlockTime, setShowBlockTime] = useState(false);
   const [blockTitle, setBlockTitle] = useState('');
   const [blockStart, setBlockStart] = useState<TimeVal>({ h: '4', m: '00', isPM: true });
   const [blockEnd, setBlockEnd] = useState<TimeVal>({ h: '5', m: '00', isPM: true });
   const [blockError, setBlockError] = useState('');
 
+  const [now, setNow] = useState(() => new Date());
+
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 60000);
     return () => clearInterval(timer);
   }, []);
 
-  const isViewingToday = selectedDate === todayStr;
-  const currentMinute = dateToMinutes(now);
-  const [year, month] = viewMonth.split('-').map(Number);
-  const calendarDays = getCalendarDays(year, month);
+  // Compute 121 days array centered around dateStripCenter (-60 to +60)
+  const stripDates = useMemo(() => {
+    const arr = [];
+    for (let i = -60; i <= 60; i++) {
+      arr.push(addDays(dateStripCenter, i));
+    }
+    return arr;
+  }, [dateStripCenter]);
 
-  const handlePrevMonth = () => setViewMonth(prev => addMonths(prev, -1));
-  const handleNextMonth = () => setViewMonth(prev => addMonths(prev, 1));
-  const handleToday = () => {
-    setViewMonth(todayStr.substring(0, 7) + '-01');
+  const flatListRef = useRef<FlatList>(null);
+
+  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 50 }).current;
+  const [visibleMonthLabel, setVisibleMonthLabel] = useState('');
+
+  useEffect(() => {
+    const [y, m] = todayStr.split('-');
+    const monthNames = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'];
+    setVisibleMonthLabel(`${monthNames[parseInt(m, 10) - 1]} ${y}`);
+  }, [todayStr]);
+
+  const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
+    if (viewableItems && viewableItems.length > 0) {
+      const centerItem = viewableItems[Math.floor(viewableItems.length / 2)];
+      if (centerItem && centerItem.item) {
+        const [y, m] = centerItem.item.split('-');
+        const monthNames = ['JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE', 'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER'];
+        setVisibleMonthLabel(`${monthNames[parseInt(m, 10) - 1]} ${y}`);
+      }
+    }
+  }).current;
+
+  // Jump list to selected date
+  useEffect(() => {
+    const idx = stripDates.indexOf(selectedDate);
+    if (idx !== -1 && flatListRef.current) {
+      flatListRef.current.scrollToIndex({ index: idx, animated: true, viewPosition: 0.5 });
+    }
+  }, [selectedDate, stripDates]);
+
+  // Month Picker math
+  const [pickerY, pickerM] = pickerMonth.split('-').map(Number);
+  const pickerDays = getCalendarDays(pickerY, pickerM);
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const pickerHeaderStr = `${monthNames[pickerM - 1]} ${pickerY}`;
+
+  const handlePickerPrev = () => setPickerMonth(prev => addMonths(prev, -1));
+  const handlePickerNext = () => setPickerMonth(prev => addMonths(prev, 1));
+  const handlePickerToday = () => {
+    setPickerMonth(todayStr.substring(0, 7) + '-01');
     setSelectedDate(todayStr);
+    setDateStripCenter(todayStr);
+    setShowMonthPicker(false);
+  };
+  const handlePickerSelect = (dStr: string) => {
+    setSelectedDate(dStr);
+    setDateStripCenter(dStr);
+    setShowMonthPicker(false);
   };
 
-  const dayEvents = getEventsForDate(selectedDate);
-  const explicitDayTasks = tasks.filter((t) => t.date === selectedDate);
-  const undatedTasks = isViewingToday ? tasks.filter((t) => t.date == null) : [];
-  const dayTasks = [...explicitDayTasks, ...undatedTasks];
-  const pendingDayTasks = dayTasks.filter(t => t.status === 'pending');
-  const completedOrSkippedTasks = dayTasks.filter(t => t.status !== 'pending');
+  // Activity Indicators Maps (canonical + legacy date support)
+  const activitiesByDate = useMemo(() => {
+    const map = new Map<string, { events: boolean; tasks: boolean }>();
+    for (const ev of events) {
+      const d = ev.scheduling?.date || ev.date;
+      if (d) {
+        if (!map.has(d)) map.set(d, { events: false, tasks: false });
+        map.get(d)!.events = true;
+      }
+    }
+    for (const t of tasks) {
+      const d = t.scheduling?.date || t.date;
+      if (d) {
+        if (!map.has(d)) map.set(d, { events: false, tasks: false });
+        map.get(d)!.tasks = true;
+      }
+    }
+    return map;
+  }, [events, tasks]);
 
-  const referenceDate = isViewingToday
-    ? now
-    : (() => {
-        const [y, m, d] = selectedDate.split('-').map(Number);
-        return new Date(y, m - 1, d, 0, 0, 0);
-      })();
+  // Canonical resolution for selectedDate
+  const isViewingToday = selectedDate === todayStr;
+  const dayEvents = events.filter((e) => (e.scheduling?.date || e.date) === selectedDate);
+  const explicitDayTasks = tasks.filter((t) => (t.scheduling?.date || t.date) === selectedDate);
+  
+  const pendingDayTasks = explicitDayTasks.filter(t => t.status === 'pending');
+  const completedOrSkippedTasks = explicitDayTasks.filter(t => t.status !== 'pending');
 
-  const schedulerEvents = dayEvents.map((e) => ({
-    id: e.id,
-    title: e.title,
-    startMinute: e.startMinute,
-    endMinute: e.endMinute,
+  const referenceDate = isViewingToday ? now : (() => {
+    const [y, m, d] = selectedDate.split('-').map(Number);
+    return new Date(y, m - 1, d, 0, 0, 0);
+  })();
+
+  const schedulerEvents = dayEvents.map((e) => {
+    const startM = e.scheduling?.startMinute ?? e.startMinute;
+    const durM = e.scheduling?.durationMinutes;
+    const endM = durM != null ? startM + durM : e.endMinute;
+    return { id: e.id, title: e.title, startMinute: startM, endMinute: endM };
+  });
+
+  // Only actively schedule PENDING tasks
+  const pendingSchedulerTasks = pendingDayTasks.map(t => ({
+    ...t,
+    scheduledStartMinute: t.scheduling?.startMinute ?? t.scheduledStartMinute ?? null,
   }));
 
-  const schedule = scheduleTasks(pendingDayTasks, DEFAULT_SCHEDULING_SETTINGS, referenceDate, schedulerEvents);
-  const taskMap = new Map(dayTasks.map((t) => [t.id, t]));
+  const schedule = scheduleTasks(pendingSchedulerTasks, DEFAULT_SCHEDULING_SETTINGS, referenceDate, schedulerEvents);
 
-  const explicitScheduledBlocks = schedule.blocks.flatMap((block) => {
-    if (block.taskId.startsWith('event-')) return [];
-    const task = taskMap.get(block.taskId);
-    return task ? [{ ...task, ...block } as ScheduledItem] : [];
-  });
-
-  const unscheduledTasks = schedule.unscheduledTaskIds.flatMap((id) => {
-    const task = taskMap.get(id);
-    return task ? [task] : [];
-  });
-
-  type TimelineItem =
-    | { kind: 'event'; data: Event }
-    | { kind: 'task'; data: ScheduledItem }
-    | { kind: 'historical'; data: Task };
-
-  const timedHistorical = completedOrSkippedTasks.filter(t => t.scheduledStartMinute !== null);
-  const anytimeHistorical = completedOrSkippedTasks.filter(t => t.scheduledStartMinute === null);
-
-  const timelineItems: TimelineItem[] = [
-    ...dayEvents.map((e) => ({ kind: 'event' as const, data: e })),
-    ...explicitScheduledBlocks.map((b) => ({ kind: 'task' as const, data: b })),
-    ...timedHistorical.map((t) => ({ kind: 'historical' as const, data: t })),
-  ].sort((a, b) => {
-    const startA = a.kind === 'event' ? a.data.startMinute : a.kind === 'historical' ? a.data.scheduledStartMinute! : (a.data as ScheduledItem).startMinute;
-    const startB = b.kind === 'event' ? b.data.startMinute : b.kind === 'historical' ? b.data.scheduledStartMinute! : (b.data as ScheduledItem).startMinute;
-    return (startA ?? 0) - (startB ?? 0);
-  });
-
-  const activitiesByDate = new Map<string, { events: boolean, tasks: boolean }>();
-  for (const ev of events) {
-    if (!activitiesByDate.has(ev.date)) activitiesByDate.set(ev.date, { events: false, tasks: false });
-    activitiesByDate.get(ev.date)!.events = true;
-  }
-  for (const t of tasks) {
-    if (t.date) {
-      if (!activitiesByDate.has(t.date)) activitiesByDate.set(t.date, { events: false, tasks: false });
-      activitiesByDate.get(t.date)!.tasks = true;
+  const scheduledBlockMap = new Map<string, { startMinute: number; endMinute: number }>();
+  for (const block of schedule.blocks) {
+    if (!block.taskId.startsWith('event-')) {
+      scheduledBlockMap.set(block.taskId, {
+        startMinute: block.startMinute,
+        endMinute: block.endMinute,
+      });
     }
   }
 
-  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  const monthHeaderStr = `${monthNames[month - 1]} ${year}`;
+  type AgendaItem = {
+    id: string;
+    title: string;
+    duration: number;
+    startMinute: number | null;
+    kind: 'event' | 'task';
+    status: 'event' | 'pending' | 'completed' | 'skipped';
+  };
+
+  // 1. Events
+  const eventItems: AgendaItem[] = dayEvents.map(e => {
+    const startM = e.scheduling?.startMinute ?? e.startMinute;
+    const dur = e.scheduling?.durationMinutes ?? ((e.endMinute ?? 60) - (e.startMinute ?? 0));
+    return {
+      id: e.id,
+      title: e.title,
+      duration: dur > 0 ? dur : 60,
+      startMinute: startM != null && startM >= 0 ? startM : null,
+      kind: 'event',
+      status: 'event',
+    };
+  });
+
+  // 2. Pending Tasks (use scheduled start if placed, else canonical start)
+  const pendingItems: AgendaItem[] = pendingDayTasks.map(t => {
+    const scheduled = scheduledBlockMap.get(t.id);
+    const startM = scheduled ? scheduled.startMinute : (t.scheduling?.startMinute ?? t.scheduledStartMinute ?? null);
+    return {
+      id: t.id,
+      title: t.title,
+      duration: t.durationMinutes || 30,
+      startMinute: startM != null && startM >= 0 ? startM : null,
+      kind: 'task',
+      status: 'pending',
+    };
+  });
+
+  // 3. Historical Tasks (completed/skipped) - strictly canonical, bypass scheduler
+  const historyItems: AgendaItem[] = completedOrSkippedTasks.map(t => {
+    const startM = t.scheduling?.startMinute ?? t.scheduledStartMinute ?? null;
+    return {
+      id: t.id,
+      title: t.title,
+      duration: t.durationMinutes || 30,
+      startMinute: startM != null && startM >= 0 ? startM : null,
+      kind: 'task',
+      status: t.status === 'skipped' ? 'skipped' : 'completed',
+    };
+  });
+
+  const allDayItems = [...eventItems, ...pendingItems, ...historyItems];
+
+  const timedItems = allDayItems
+    .filter(item => item.startMinute !== null)
+    .sort((a, b) => a.startMinute! - b.startMinute!);
+
+  const anytimeItems = allDayItems.filter(item => item.startMinute === null);
+
+  // Diagnostic Logs
+  useEffect(() => {
+    console.log('[CALENDAR_RUNTIME] NEW CALENDAR CODE LOADED');
+  }, []);
+
+  useEffect(() => {
+    console.log(`[CALENDAR_RUNTIME] selectedDate=${selectedDate}`);
+    console.log(`[CALENDAR_RUNTIME] viewMonth=${visibleMonthLabel}`);
+    console.log(`[CALENDAR_RUNTIME] dateStripCount=${stripDates.length}`);
+    console.log(`[CALENDAR_RUNTIME] calendarIconRendered=true`);
+    console.log(`[CALENDAR_RUNTIME] selectedDateTasks=${explicitDayTasks.length} (pending: ${pendingDayTasks.length}, history: ${completedOrSkippedTasks.length})`);
+    console.log(`[CALENDAR_RUNTIME] timedItems=${timedItems.length}, anytimeItems=${anytimeItems.length}`);
+    
+    console.log('[CALENDAR_HISTORY]', {
+      selectedDate,
+      allTasks: tasks.length,
+      matchingTasks: explicitDayTasks.length,
+      completed: completedOrSkippedTasks.filter(t => t.status === 'completed').length,
+      pending: pendingDayTasks.length,
+      skipped: completedOrSkippedTasks.filter(t => t.status === 'skipped').length,
+      events: dayEvents.length,
+    });
+  }, [selectedDate, visibleMonthLabel, stripDates.length, explicitDayTasks.length, pendingDayTasks.length, completedOrSkippedTasks.length, dayEvents.length, tasks.length, timedItems.length, anytimeItems.length]);
 
   const timeValToMinutes = (tv: TimeVal) => {
     let h = parseInt(tv.h || '0', 10);
@@ -249,237 +346,335 @@ export default function CalendarScreen() {
     setShowBlockTime(false);
   };
 
-  const totalItemsCount = dayTasks.length + dayEvents.length;
-
   return (
-    <KeyboardAvoidingView 
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      style={styles.container}>
-      <Pressable style={StyleSheet.absoluteFill} onPress={() => router.back()} />
+    <View style={[styles.container, { paddingTop: insets.top }]}>
       
-      <View style={[styles.modalCard, { paddingBottom: insets.bottom || 20 }]}>
+      {/* HEADER */}
+      <View style={styles.header}>
+        <Pressable onPress={() => router.back()} style={styles.backBtn} accessibilityRole="button" accessibilityLabel="Back">
+          <Text style={styles.backBtnText}>←</Text>
+        </Pressable>
+        <Text style={styles.headerTitle}>Calendar</Text>
+        <View style={{ width: 38 }} />
+      </View>
+
+      {/* DATE STRIP */}
+      <View style={styles.stripContainer}>
+        <Text style={styles.visibleMonthLabel}>{visibleMonthLabel}</Text>
+        <View style={styles.stripRow}>
+          <Pressable
+            style={styles.iconBtn}
+            onPress={() => setShowMonthPicker(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Open month picker"
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <View style={{ width: 24, height: 24, alignItems: 'center', justifyContent: 'center' }}>
+              <View style={StyleSheet.absoluteFill}>
+                <CalendarFallbackIcon color="#A7A0FF" />
+              </View>
+              <SymbolView
+                name={{ ios: 'calendar', android: 'calendar_month', web: 'calendar_month' }}
+                size={24}
+                tintColor="#A7A0FF"
+                fallback={<CalendarFallbackIcon color="#A7A0FF" />}
+              />
+            </View>
+          </Pressable>
+          
+          <FlatList
+            style={{ flex: 1, minWidth: 0 }}
+            ref={flatListRef}
+            horizontal
+            data={stripDates}
+            keyExtractor={(item) => item}
+            showsHorizontalScrollIndicator={false}
+            initialScrollIndex={60 - 3}
+            getItemLayout={(data, index) => ({ length: 60, offset: 60 * index, index })}
+            onViewableItemsChanged={onViewableItemsChanged}
+            viewabilityConfig={viewabilityConfig}
+            contentContainerStyle={styles.stripContent}
+            renderItem={({ item }) => {
+              const date = new Date(item + 'T12:00:00Z');
+              const dow = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'][date.getUTCDay()];
+              const dayNum = date.getUTCDate();
+              const isSelected = item === selectedDate;
+              const isToday = item === todayStr;
+              const hasEvents = activitiesByDate.get(item)?.events;
+              const hasTasks = activitiesByDate.get(item)?.tasks;
+
+              return (
+                <Pressable
+                  onPress={() => setSelectedDate(item)}
+                  style={[styles.stripItem, isSelected && styles.stripItemSelected]}>
+                  <Text style={[styles.stripDow, isSelected && styles.stripTextSelected]}>{dow}</Text>
+                  <Text style={[styles.stripDay, isSelected && styles.stripTextSelected, isToday && !isSelected && styles.stripDayToday]}>{dayNum}</Text>
+                  <View style={styles.dotsRow}>
+                    {hasEvents && <View style={[styles.dot, { backgroundColor: isSelected ? '#0B0D10' : '#FCD34D' }]} />}
+                    {hasTasks && <View style={[styles.dot, { backgroundColor: isSelected ? '#0B0D10' : '#A7A0FF' }]} />}
+                  </View>
+                </Pressable>
+              );
+            }}
+          />
+        </View>
+      </View>
+
+      {/* BODY */}
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.body}>
         
         {!showBlockTime ? (
           <>
-            {/* Calendar Header */}
-            <View style={styles.modalHeader}>
-              <View style={styles.monthNav}>
-                <Pressable onPress={handlePrevMonth} style={styles.navBtn} hitSlop={10}><Text style={styles.navBtnText}>{'<'}</Text></Pressable>
-                <Text style={styles.monthHeaderText}>{monthHeaderStr}</Text>
-                <Pressable onPress={handleNextMonth} style={styles.navBtn} hitSlop={10}><Text style={styles.navBtnText}>{'>'}</Text></Pressable>
-              </View>
-              <Pressable onPress={handleToday} style={styles.todayBtn}><Text style={styles.todayBtnText}>Today</Text></Pressable>
+            <View style={styles.agendaHeader}>
+              <Text style={styles.agendaTitle}>{
+                isViewingToday ? 'TODAY' 
+                : addDays(todayStr, -1) === selectedDate ? 'YESTERDAY'
+                : addDays(todayStr, 1) === selectedDate ? 'TOMORROW'
+                : formatDisplayDate(selectedDate).toUpperCase()
+              }</Text>
             </View>
-
-            {/* Grid */}
-            <View style={styles.gridContainer}>
-              <View style={styles.dowRow}>
-                {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((dow, i) => (
-                  <Text key={i} style={styles.gridDow}>{dow}</Text>
-                ))}
-              </View>
-              <View style={styles.daysGrid}>
-                {calendarDays.map((dateStr) => {
-                  const [, m, d] = dateStr.split('-').map(Number);
-                  const isCurrentMonth = m === month;
-                  const isSelected = dateStr === selectedDate;
-                  const isToday = dateStr === todayStr;
-                  const hasEvents = activitiesByDate.get(dateStr)?.events;
-                  const hasTasks = activitiesByDate.get(dateStr)?.tasks;
-
-                  return (
-                    <Pressable
-                      key={dateStr}
-                      onPress={() => {
-                        setSelectedDate(dateStr);
-                        if (!isCurrentMonth) setViewMonth(dateStr.substring(0, 7) + '-01');
-                      }}
-                      style={[
-                        styles.gridCell,
-                        isSelected && styles.gridCellSelected,
-                        !isCurrentMonth && styles.gridCellFaded
-                      ]}>
-                      <Text style={[
-                        styles.gridDayText,
-                        isSelected && styles.gridDayTextSelected,
-                        isToday && !isSelected && styles.gridDayTextToday
-                      ]}>{d}</Text>
-                      <View style={styles.dotsRow}>
-                        {hasEvents && <View style={[styles.dot, { backgroundColor: '#FCD34D' }, isSelected && { backgroundColor: '#0B0D10' }]} />}
-                        {hasTasks && <View style={[styles.dot, { backgroundColor: '#A7A0FF' }, isSelected && { backgroundColor: '#0B0D10' }]} />}
-                      </View>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </View>
-
-            {/* Agenda Divider */}
-            <View style={styles.agendaDivider}>
-              <Text style={styles.agendaDateLabel}>{formatDisplayDate(selectedDate).toUpperCase()}</Text>
-              <Text style={styles.agendaCount}>{totalItemsCount} items</Text>
-            </View>
-
-            {/* Agenda List */}
-            <ScrollView style={styles.agendaScroll} showsVerticalScrollIndicator={false}>
-              {timelineItems.length === 0 && unscheduledTasks.length === 0 && anytimeHistorical.length === 0 ? (
-                <Text style={styles.emptyAgenda}>No plans for this date.</Text>
+            
+            <ScrollView style={styles.agendaScroll} contentContainerStyle={styles.agendaContent} showsVerticalScrollIndicator={false}>
+              {timedItems.length === 0 && anytimeItems.length === 0 ? (
+                <Text style={styles.emptyText}>No plans for this date.</Text>
               ) : (
-                <View style={styles.agendaItems}>
-                  {timelineItems.map((item, idx) => {
-                    const isDone = item.kind === 'historical' || (item.kind === 'task' && item.data.status !== 'pending');
-                    const isSkipped = item.kind !== 'event' && item.data.status === 'skipped';
-                    const startM = item.kind === 'event' ? item.data.startMinute : item.kind === 'historical' ? item.data.scheduledStartMinute! : (item.data as ScheduledItem).startMinute;
-                    const dur = item.kind === 'event' ? ((item.data.endMinute ?? 60) - (item.data.startMinute ?? 0)) : item.data.durationMinutes;
-                    const title = item.data.title;
-                    const typeLabel = item.kind === 'event' ? 'EVENT' : isDone ? (isSkipped ? 'SKIPPED' : 'COMPLETED') : 'TASK';
+                <>
+                  {timedItems.map((item) => {
+                    const isDone = item.status === 'completed' || item.status === 'skipped';
+                    const isSkipped = item.status === 'skipped';
+                    const typeLabel = item.status.toUpperCase();
                     
                     return (
-                      <View key={idx} style={[styles.agendaItem, isDone && styles.agendaItemDone]}>
+                      <View key={item.id} style={[styles.agendaItem, isDone && styles.agendaItemDone]}>
                         <View style={styles.agendaTimeCol}>
-                          <Text style={styles.agendaTimeText}>{minutesToDisplay(startM ?? 0)}</Text>
+                          <Text style={styles.agendaTimeText}>{minutesToDisplay(item.startMinute!)}</Text>
                         </View>
-                        <View style={styles.agendaBody}>
-                          <Text style={[styles.agendaTitle, isSkipped && styles.agendaTitleSkipped, isDone && !isSkipped && styles.agendaTitleDone]}>{title}</Text>
-                          <Text style={styles.agendaMeta}>{dur}m · {typeLabel}</Text>
+                        <View style={styles.agendaBodyCol}>
+                          <Text style={[
+                            styles.agendaItemTitle,
+                            isDone && !isSkipped && styles.agendaItemDoneTitle,
+                            isSkipped && styles.agendaItemSkippedTitle
+                          ]}>
+                            {item.title}
+                          </Text>
+                          <Text style={styles.agendaItemMeta}>{item.duration}m · {typeLabel}</Text>
                         </View>
                       </View>
                     );
                   })}
-                  
-                  {(unscheduledTasks.length > 0 || anytimeHistorical.length > 0) && (
+
+                  {anytimeItems.length > 0 && (
                     <View style={styles.anytimeSection}>
-                      <Text style={styles.anytimeLabel}>ANYTIME</Text>
-                      {[...unscheduledTasks, ...anytimeHistorical].map((task, idx) => {
-                        const isDone = task.status !== 'pending';
-                        const isSkipped = task.status === 'skipped';
+                      <Text style={styles.anytimeSectionTitle}>ANYTIME</Text>
+                      {anytimeItems.map((item) => {
+                        const isDone = item.status === 'completed' || item.status === 'skipped';
+                        const isSkipped = item.status === 'skipped';
+                        const typeLabel = item.status.toUpperCase();
+                        
                         return (
-                          <View key={`any-${idx}`} style={[styles.agendaItem, isDone && styles.agendaItemDone]}>
-                            <View style={styles.agendaBody}>
-                              <Text style={[styles.agendaTitle, isSkipped && styles.agendaTitleSkipped, isDone && !isSkipped && styles.agendaTitleDone]}>{task.title}</Text>
-                              <Text style={styles.agendaMeta}>{formatDuration(task.durationMinutes)} · {isDone ? (isSkipped ? 'SKIPPED' : 'COMPLETED') : 'TASK'}</Text>
+                          <View key={item.id} style={[styles.agendaItem, isDone && styles.agendaItemDone]}>
+                            <View style={styles.agendaTimeCol}>
+                              <Text style={styles.agendaTimeText}>Anytime</Text>
+                            </View>
+                            <View style={styles.agendaBodyCol}>
+                              <Text style={[
+                                styles.agendaItemTitle,
+                                isDone && !isSkipped && styles.agendaItemDoneTitle,
+                                isSkipped && styles.agendaItemSkippedTitle
+                              ]}>
+                                {item.title}
+                              </Text>
+                              <Text style={styles.agendaItemMeta}>{item.duration}m · {typeLabel}</Text>
                             </View>
                           </View>
                         );
                       })}
                     </View>
                   )}
-                </View>
+                </>
               )}
             </ScrollView>
-
-            <Pressable style={styles.blockTimeBtn} onPress={() => setShowBlockTime(true)}>
-              <Text style={styles.blockTimeBtnText}>+ Block time</Text>
-            </Pressable>
+            
+            <View style={styles.footer}>
+              <Pressable style={styles.blockBtn} onPress={() => setShowBlockTime(true)}>
+                <Text style={styles.blockBtnText}>+ Block time</Text>
+              </Pressable>
+            </View>
           </>
         ) : (
-          /* Time Blocking Form */
-          <View style={styles.blockForm}>
-            <View style={styles.formHeader}>
-              <Pressable onPress={() => setShowBlockTime(false)} style={styles.backBtn} hitSlop={10}>
-                <Text style={styles.backBtnText}>{'< Back'}</Text>
-              </Pressable>
-              <Text style={styles.formTitle}>Block Time</Text>
-              <View style={{width: 50}} />
+          /* BLOCK TIME FORM */
+          <ScrollView style={styles.formScroll} contentContainerStyle={styles.formContent} keyboardShouldPersistTaps="handled">
+            <Text style={styles.formTitle}>BLOCK TIME</Text>
+            
+            <Text style={ti.label}>WHAT ARE YOU DOING?</Text>
+            <TextInput
+              style={styles.titleInput}
+              placeholder="e.g. Meeting with Narendra"
+              placeholderTextColor="#4A5060"
+              value={blockTitle}
+              onChangeText={setBlockTitle}
+            />
+            
+            <View style={styles.timeInputsRow}>
+              <TimeInput label="START TIME" value={blockStart} onChange={setBlockStart} />
+              <TimeInput label="END TIME" value={blockEnd} onChange={setBlockEnd} />
             </View>
 
-            <Text style={styles.agendaDateLabel}>{formatDisplayDate(selectedDate).toUpperCase()}</Text>
+            {blockError ? <Text style={styles.errorText}>{blockError}</Text> : null}
 
-            <View style={styles.formBody}>
-              <Text style={ti.label}>WHAT ARE YOU DOING?</Text>
-              <TextInput
-                style={styles.titleInput}
-                placeholder="e.g. Meeting with Narendra"
-                placeholderTextColor="#4A5060"
-                value={blockTitle}
-                onChangeText={setBlockTitle}
-              />
-              
-              <View style={styles.timeInputsRow}>
-                <TimeInput label="START TIME" value={blockStart} onChange={setBlockStart} />
-                <TimeInput label="END TIME" value={blockEnd} onChange={setBlockEnd} />
-              </View>
-
-              {blockError ? <Text style={styles.errorText}>{blockError}</Text> : null}
-
+            <View style={styles.formActions}>
+              <Pressable style={styles.cancelBtn} onPress={() => setShowBlockTime(false)}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </Pressable>
               <Pressable style={styles.saveBtn} onPress={handleSaveBlock}>
-                <Text style={styles.saveBtnText}>Save Block</Text>
+                <Text style={styles.saveBtnText}>Save</Text>
               </Pressable>
             </View>
-          </View>
+          </ScrollView>
         )}
-      </View>
-    </KeyboardAvoidingView>
+      </KeyboardAvoidingView>
+
+      {/* MONTH PICKER MODAL */}
+      <Modal visible={showMonthPicker} transparent animationType="fade" onRequestClose={() => setShowMonthPicker(false)}>
+        <View style={styles.modalOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShowMonthPicker(false)} />
+          <View style={[styles.pickerCard, { paddingBottom: insets.bottom || 20 }]}>
+            
+            <View style={styles.pickerHeader}>
+              <Pressable onPress={handlePickerPrev} style={styles.pickerNavBtn}><Text style={styles.pickerNavText}>{'<'}</Text></Pressable>
+              <Text style={styles.pickerMonthStr}>{pickerHeaderStr}</Text>
+              <Pressable onPress={handlePickerNext} style={styles.pickerNavBtn}><Text style={styles.pickerNavText}>{'>'}</Text></Pressable>
+            </View>
+
+            <View style={styles.pickerGrid}>
+              <View style={styles.pickerDowRow}>
+                {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((dow, i) => (
+                  <Text key={i} style={styles.pickerDow}>{dow}</Text>
+                ))}
+              </View>
+              <View style={styles.pickerDays}>
+                {pickerDays.map((dStr) => {
+                  const [, m, d] = dStr.split('-').map(Number);
+                  const isCur = m === pickerM;
+                  const isSel = dStr === selectedDate;
+                  const isTod = dStr === todayStr;
+                  return (
+                    <Pressable
+                      key={dStr}
+                      onPress={() => handlePickerSelect(dStr)}
+                      style={[
+                        styles.pickerCell,
+                        isSel && styles.pickerCellSel,
+                        !isCur && styles.pickerCellFaded
+                      ]}>
+                      <Text style={[
+                        styles.pickerDayText,
+                        isSel && styles.pickerTextSel,
+                        isTod && !isSel && styles.pickerTextTod
+                      ]}>{d}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+
+            <Pressable style={styles.pickerTodayBtn} onPress={handlePickerToday}>
+              <Text style={styles.pickerTodayText}>Today</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
-  modalCard: {
-    backgroundColor: '#12141A',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingTop: 20,
-    paddingHorizontal: 20,
-    maxHeight: '85%',
-  },
-  
-  // Header
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  monthNav: { flexDirection: 'row', alignItems: 'center', gap: 16 },
-  navBtn: { padding: 4 },
-  navBtnText: { color: '#737983', fontSize: 20, fontWeight: '700' },
-  monthHeaderText: { color: '#E8E9EC', fontSize: 16, fontWeight: '700', minWidth: 130, textAlign: 'center' },
-  todayBtn: { backgroundColor: '#1E2228', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
-  todayBtnText: { color: '#A7A0FF', fontSize: 13, fontWeight: '700' },
+  container: { flex: 1, backgroundColor: '#0B0D10' },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 12 },
+  backBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#191C22', alignItems: 'center', justifyContent: 'center' },
+  backBtnText: { color: '#FFF', fontSize: 20, fontWeight: '600' },
+  headerTitle: { color: '#FFF', fontSize: 18, fontWeight: '700' },
 
-  // Grid
-  gridContainer: { marginBottom: 16 },
-  dowRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
-  gridDow: { width: '14.28%', textAlign: 'center', color: '#4A5060', fontSize: 11, fontWeight: '700' },
-  daysGrid: { flexDirection: 'row', flexWrap: 'wrap' },
-  gridCell: { width: '14.28%', aspectRatio: 1, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
-  gridCellSelected: { backgroundColor: '#A7A0FF' },
-  gridCellFaded: { opacity: 0.3 },
-  gridDayText: { color: '#E8E9EC', fontSize: 15, fontWeight: '500' },
-  gridDayTextSelected: { color: '#0B0D10', fontWeight: '700' },
-  gridDayTextToday: { color: '#FF7B7B', fontWeight: '700' },
-  dotsRow: { flexDirection: 'row', gap: 2, marginTop: 2, height: 4 },
+  stripContainer: { borderBottomWidth: 1, borderBottomColor: '#1E2228', paddingBottom: 12, width: '100%' },
+  visibleMonthLabel: { color: '#E8E9EC', fontSize: 13, fontWeight: '700', letterSpacing: 1.5, textAlign: 'center', marginBottom: 12 },
+  stripRow: { width: '100%', flexDirection: 'row', alignItems: 'center', paddingLeft: 12 },
+  iconBtn: {
+    width: 48,
+    height: 64,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#12141A',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#252932',
+    marginRight: 8,
+  },
+  stripContent: { paddingRight: 16, gap: 8 },
+  stripItem: { width: 52, height: 64, alignItems: 'center', justifyContent: 'center', borderRadius: 12 },
+  stripItemSelected: { backgroundColor: '#A7A0FF' },
+  stripDow: { color: '#737983', fontSize: 10, fontWeight: '700', marginBottom: 2 },
+  stripDay: { color: '#E8E9EC', fontSize: 18, fontWeight: '600' },
+  stripDayToday: { color: '#FF7B7B' },
+  stripTextSelected: { color: '#0B0D10' },
+  dotsRow: { flexDirection: 'row', gap: 2, marginTop: 4, height: 4 },
   dot: { width: 4, height: 4, borderRadius: 2 },
 
-  // Agenda
-  agendaDivider: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderTopWidth: 1, borderColor: '#1E2228' },
-  agendaDateLabel: { color: '#A7A0FF', fontSize: 11, fontWeight: '700', letterSpacing: 1.2 },
-  agendaCount: { color: '#4A5060', fontSize: 12, fontWeight: '600' },
-  agendaScroll: { minHeight: 120, maxHeight: 250 },
-  emptyAgenda: { color: '#737983', fontSize: 14, textAlign: 'center', marginTop: 20 },
-  agendaItems: { gap: 12, paddingBottom: 16 },
-  agendaItem: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12, backgroundColor: '#171A20', borderRadius: 12 },
-  agendaItemDone: { opacity: 0.5 },
-  agendaTimeCol: { width: 65 },
-  agendaTimeText: { color: '#E8E9EC', fontSize: 13, fontWeight: '600' },
-  agendaBody: { flex: 1 },
-  agendaTitle: { color: '#E8E9EC', fontSize: 15, fontWeight: '600' },
-  agendaTitleDone: { textDecorationLine: 'line-through', color: '#737983' },
-  agendaTitleSkipped: { fontStyle: 'italic', color: '#737983' },
-  agendaMeta: { color: '#737983', fontSize: 12, marginTop: 4, fontWeight: '500' },
+  body: { flex: 1 },
+  agendaHeader: { paddingHorizontal: 20, paddingTop: 24, paddingBottom: 12 },
+  agendaTitle: { color: '#A7A0FF', fontSize: 12, fontWeight: '700', letterSpacing: 1.2 },
+  agendaScroll: { flex: 1 },
+  agendaContent: { paddingHorizontal: 20, paddingBottom: 20, gap: 12 },
+  emptyText: { color: '#737983', fontSize: 14, textAlign: 'center', marginTop: 40 },
   
-  anytimeSection: { marginTop: 8 },
-  anytimeLabel: { color: '#FF7B7B', fontSize: 10, fontWeight: '700', letterSpacing: 1.2, marginBottom: 8, marginLeft: 4 },
+  agendaItem: { flexDirection: 'row', backgroundColor: '#12141A', borderRadius: 12, padding: 16 },
+  agendaItemDone: { opacity: 0.6 },
+  agendaTimeCol: { width: 75 },
+  agendaTimeText: { color: '#E8E9EC', fontSize: 13, fontWeight: '600' },
+  agendaBodyCol: { flex: 1 },
+  agendaItemTitle: { color: '#E8E9EC', fontSize: 15, fontWeight: '600' },
+  agendaItemDoneTitle: { textDecorationLine: 'line-through', color: '#737983' },
+  agendaItemSkippedTitle: { fontStyle: 'italic', color: '#737983' },
+  agendaItemMeta: { color: '#737983', fontSize: 12, marginTop: 4, fontWeight: '500' },
 
-  blockTimeBtn: { backgroundColor: '#252932', paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginTop: 12 },
-  blockTimeBtnText: { color: '#E8E9EC', fontSize: 15, fontWeight: '700' },
+  anytimeSection: { marginTop: 8, gap: 12 },
+  anytimeSectionTitle: { color: '#737983', fontSize: 11, fontWeight: '700', letterSpacing: 1.2, marginBottom: 4, marginTop: 8 },
 
-  // Form
-  blockForm: { paddingBottom: 20 },
-  formHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  backBtn: { padding: 4 },
-  backBtnText: { color: '#A7A0FF', fontSize: 15, fontWeight: '600' },
-  formTitle: { color: '#E8E9EC', fontSize: 16, fontWeight: '700' },
-  formBody: { marginTop: 16 },
-  titleInput: { backgroundColor: '#1E2228', color: '#E8E9EC', fontSize: 16, borderRadius: 12, padding: 16, marginBottom: 20 },
-  timeInputsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
-  errorText: { color: '#FF7B7B', fontSize: 13, marginBottom: 16, textAlign: 'center' },
-  saveBtn: { backgroundColor: '#A7A0FF', paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
+  footer: { padding: 20, borderTopWidth: 1, borderTopColor: '#1E2228' },
+  blockBtn: { backgroundColor: '#252932', paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
+  blockBtnText: { color: '#E8E9EC', fontSize: 16, fontWeight: '700' },
+
+  // Block Form
+  formScroll: { flex: 1 },
+  formContent: { padding: 20 },
+  formTitle: { color: '#FFF', fontSize: 18, fontWeight: '700', marginBottom: 24 },
+  titleInput: { backgroundColor: '#1E2228', color: '#E8E9EC', fontSize: 16, borderRadius: 12, padding: 16, marginBottom: 24 },
+  timeInputsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
+  errorText: { color: '#FF7B7B', fontSize: 13, marginBottom: 16 },
+  formActions: { flexDirection: 'row', gap: 12, marginTop: 12 },
+  cancelBtn: { flex: 1, backgroundColor: '#252932', paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
+  cancelBtnText: { color: '#E8E9EC', fontSize: 16, fontWeight: '700' },
+  saveBtn: { flex: 1, backgroundColor: '#A7A0FF', paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
   saveBtnText: { color: '#0B0D10', fontSize: 16, fontWeight: '700' },
+
+  // Picker
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
+  pickerCard: { backgroundColor: '#12141A', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20 },
+  pickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+  pickerNavBtn: { padding: 10 },
+  pickerNavText: { color: '#737983', fontSize: 20, fontWeight: '700' },
+  pickerMonthStr: { color: '#E8E9EC', fontSize: 16, fontWeight: '700' },
+  pickerGrid: { marginBottom: 20 },
+  pickerDowRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
+  pickerDow: { width: '14.28%', textAlign: 'center', color: '#4A5060', fontSize: 11, fontWeight: '700' },
+  pickerDays: { flexDirection: 'row', flexWrap: 'wrap' },
+  pickerCell: { width: '14.28%', aspectRatio: 1, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
+  pickerCellSel: { backgroundColor: '#A7A0FF' },
+  pickerCellFaded: { opacity: 0.3 },
+  pickerDayText: { color: '#E8E9EC', fontSize: 15, fontWeight: '500' },
+  pickerTextSel: { color: '#0B0D10', fontWeight: '700' },
+  pickerTextTod: { color: '#FF7B7B', fontWeight: '700' },
+  pickerTodayBtn: { backgroundColor: '#1E2228', paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
+  pickerTodayText: { color: '#A7A0FF', fontSize: 15, fontWeight: '700' },
 });

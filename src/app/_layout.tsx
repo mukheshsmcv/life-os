@@ -21,7 +21,7 @@ export default function RootLayout() {
           <TasksProvider>
             <Stack screenOptions={{ headerShown: false }}>
               <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-              <Stack.Screen name="calendar" options={{ headerShown: false, presentation: 'transparentModal', animation: 'slide_from_bottom' }} />
+              <Stack.Screen name="calendar" options={{ headerShown: false }} />
             </Stack>
           </TasksProvider>
         </ThemeProvider>

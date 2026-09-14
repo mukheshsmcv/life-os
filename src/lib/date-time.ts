@@ -417,3 +417,13 @@ export function getCalendarDays(year: number, month: number): string[] {
   
   return days;
 }
+
+/**
+ * Adds (or subtracts) a given number of days to a YYYY-MM-DD date string.
+ * Uses Date.UTC to avoid timezone drift.
+ */
+export function addDays(dateStr: string, offset: number): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d + offset, 12, 0, 0));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+}
