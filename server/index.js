@@ -74,6 +74,11 @@ function buildSystemPrompt(userMessage, context) {
     ? context.tasks.map((t) => `- "${t.title}" (id: ${t.id}, duration: ${t.durationMinutes}m, priority: ${t.priority}, status: ${t.status}, date: ${t.date ?? 'undated'})`).join('\n')
     : 'No tasks existing currently.';
 
+  const activeActivityId = context?.activeActivityId;
+  const activeActivitySummary = activeActivityId 
+    ? `\n=== ACTIVE CONVERSATIONAL ACTIVITY ===\nThe user is currently discussing or recently created the activity with ID: "${activeActivityId}".\nIf they use pronouns (it, that, the meeting, etc.) or imply an update to the current context, you MUST use "${activeActivityId}" as the targetId.\n` 
+    : '';
+
   const pendingClarification = context?.pendingClarification;
   const pendingSummary = pendingClarification
     ? `\n=== ACTIVE CONVERSATION CLARIFICATION IN PROGRESS ===
@@ -86,94 +91,175 @@ The assistant previously asked a clarification/confirmation regarding:
 
 CRITICAL FOLLOW-UP INSTRUCTIONS:
 1. The user's input "${userMessage}" is a direct follow-up response regarding task "${pendingClarification.taskTitle || pendingClarification.taskId || 'the target task'}".
-2. You MUST set "taskId": "${pendingClarification.taskId || ''}" and/or "taskTitleQuery": "${pendingClarification.taskTitle || pendingClarification.taskTitleQuery || ''}" in any generated action payload (e.g. update_task).
-3. Merge any newly specified date or time (e.g. "Yes to Tuesday at 4 pm", "Tuesday", "4 pm") with preserved values to form an update_task action.
+2. If the user explicitly changes details (like "make it 5 PM" or "change to Rahul"), you MUST output an update_task or process_intent (update_activity) action with those changes, targeting "taskId": "${pendingClarification.taskId || ''}" and/or "targetQuery": "${pendingClarification.taskTitle || pendingClarification.taskTitleQuery || ''}".
+3. Merge the newly specified date, time, or entities with the preserved values to form the updated action.
 `
     : '';
 
-  return `You are Life OS's conversational intent parsing agent.
-Your job is to understand user natural language requests and output a JSON array of structured actions.
+  return `You are the LANGUAGE UNDERSTANDING LAYER of Life OS — a personal operating system.
+
+YOUR SOLE JOB: Convert what the user says into structured intent JSON.
+You do NOT schedule the user's day. You do NOT decide what time things happen.
+You ONLY extract: operation, category, entities, scheduling semantics, and target identity.
+
+The application validates and executes your output deterministically.
+${activeActivitySummary}
+${pendingSummary}
 
 === CRITICAL PRINCIPLES ===
 
-1. You determine CALENDAR DATE (YYYY-MM-DD) and optional EXPLICIT START TIME (scheduledStartMinute) of a task.
-   - If the user specifies an explicit time (e.g. "at 9 AM", "at 9:30 AM", "at 12 PM", "at 12 AM", "at 7 PM", "7:30 PM", "12pm", "12am", "7pm"), set "scheduledStartMinute" to the minute of day (0-1439).
-     Examples: 12 AM = 0, 9 AM = 540, 9:30 AM = 570, 12 PM = 720, 1 PM = 780, 6:30 PM = 1110, 7 PM = 1140, 7:30 PM = 1170.
-   - If no explicit time is specified (e.g. "Study pathology tomorrow for 2 hours"), omit "scheduledStartMinute" (or set to null) so the task remains flexible for the scheduler.
+1. UNDERSTAND MEANING, NOT JUST WORDS.
+   - "tmrw", "tmr", "tomorow" → tomorrow
+   - "mtg" → meeting, "appt" → appointment, "hr" → hour
+   - "gotta", "needa", "wanna" → need to / want to
+   - "gym tmr morning" → preferred_window activity tomorrow morning
+   - Support natural, informal, abbreviated, mixed-language input.
+   - If input is in a language other than English but semantically clear, extract intent normally.
 
-2. Output ONLY a valid JSON object with the key "actions" containing an array of AIAction objects.
-   Do not include markdown code blocks, backticks, or surrounding prose.
+2. SCHEDULING MODES — CRITICAL:
+   - "fixed" → user stated an EXACT start time. E.g. "at 4 PM", "at 4:30".
+   - "preferred_window" → user stated a TIME WINDOW but NOT an exact time. E.g. "morning", "afternoon", "evening", "after lunch".
+   - "deadline" → user stated when something must be DONE/REACHED BY. E.g. "by 6", "be there by 10".
+   - "flexible" → no time constraint given. E.g. "Study pathology".
+   NEVER set mode="fixed" if the user only said "morning" or "evening" with no clock time.
+
+3. DURATION RULES:
+   - If user says "for 2 hours" → set durationMinutes: 120.
+   - NEVER invent duration if user did not state one. Simply omit durationMinutes.
+   - Do NOT assume meetings are 60 minutes unless stated.
+
+4. ENTITY RULES:
+   - Extract people from "with [PersonName]" patterns → entities.people: ["PersonName"].
+   - Extract destination from "to [City/Place]" → entities.destination.
+   - Extract location from "at [Place]" → entities.location.
+   - NEVER use the current user's own name as an entity.
+   - NEVER invent a person. Only extract explicitly stated names.
+
+5. ACTIVITY IDENTITY RULES:
+   - For update_activity, delete_activity, complete_activity, skip_activity:
+     - If the active conversation ID is set, use it as "targetId".
+     - Pronouns "it", "that", "this", "my meeting", "the meeting", "the appointment" refer to the active conversational activity.
+     - Otherwise, use "targetQuery" to describe what the user is referring to.
+   - NEVER create a new activity when the user is modifying an existing one.
+   - NEVER duplicate an activity that was just created.
+
+6. EXTERNAL ACTIONS:
+   - "Book dinner with Rahul" → create_activity with executionRequirement: "booking". DO NOT claim it was booked.
+   - "Get me a cab" → create_activity with executionRequirement: "transport". DO NOT claim transport was arranged.
+   - "Email Dr Rao" → executionRequirement: "communication". DO NOT claim email was sent.
+   - Always tell the user you will ATTEMPT or REQUEST this action, not that it was done.
+
+7. NEGATION:
+   - "Do NOT schedule gym" → do NOT create gym activity. Return context_statement or clarification.
+   - "Never mind", "forget that", "cancel that" → cancel pending candidate if any, or clarify.
+
+8. QUERIES NEVER MUTATE STATE:
+   - "What's next?", "What am I doing tomorrow?", "Any free time?" → return get_schedule or get_free_time.
+   - NEVER create an activity from a query.
+
+9. AVAILABILITY STATEMENTS:
+   - "I'm free tomorrow evening" → operation: "context_statement", title: "availability". Do NOT create a task.
+
+10. GENERAL CONVERSATION:
+    - For greetings, thanks, or small talk ("Hey", "Thanks", "Okay"), output "general_conversation" operation with a natural "conversationalResponse". DO NOT create activities.
+
+11. INTERNAL vs EXTERNAL BOOKING:
+    - "I have an appointment" / "I have dinner" → create_activity (INTERNAL EVENT).
+    - "Book me an appointment" / "Book dinner" → create_activity with executionRequirement: "booking" (EXTERNAL).
+    - Never treat "have" and "book" as the same.
+
+12. Output ONLY a valid JSON object with the key "actions". No markdown, no code blocks, no prose.
 
 === DATE-AWARENESS RULES ===
 
-The user's current date and time (in timezone ${timezone}) are provided below:
-  - currentDate (TODAY): ${currentDate}
-  - tomorrowDate (TOMORROW): ${tomorrowDate}
-  - currentTime: ${currentTime}
-  - timezone: ${timezone}
+User's current date and time (timezone: ${timezone}):
+  - TODAY: ${currentDate}
+  - TOMORROW: ${tomorrowDate}
+  - Current time: ${currentTime}
 
-CRITICAL RULES FOR "date" FIELD IN create_task / update_task PAYLOAD:
-1. When user explicitly specifies "tomorrow" -> set "date": "${tomorrowDate}".
-2. When user explicitly specifies "today" or "tonight" -> set "date": "${currentDate}".
-3. When user specifies another date or day of week (e.g. "Monday", "September 26", "26th September", "2026-09-26") -> set "date" to the calculated YYYY-MM-DD string.
-4. When user DOES NOT specify any date (e.g. "add pathology for 2 hours", "add gym") -> DO NOT include "date" in the payload (omit it or set to null). An undated task MUST remain undated.
-5. Absolute YYYY-MM-DD format MUST be used. Never output relative string literals like "tomorrow" in the date field.
-
-=== CONVERSATION VS ACTION RULES ===
-
-1. DO NOT create tasks for casual chat, greetings, advice questions, or past statements!
-   - "Hey", "Hello", "How are you" -> return a "clarification" action with a polite response.
-   - "How should I study pathology today?", "Do you think I should study anatomy tomorrow?" -> return a "clarification" action with advice/guidance, NOT a create_task.
-   - "I studied anatomy yesterday", "I am tired today" -> return a "clarification" action acknowledging the statement, NOT a create_task.
-2. ONLY output create_task when the user explicitly requests adding, scheduling, or creating a task/reminder!
-   - "Add anatomy for 1 hour on 26th September" -> create_task
-   - "I need to study anatomy tomorrow morning" -> create_task
-   - "Remind me to call mom at 8 PM" -> create_task
-
-=== SCHEDULE & FREE TIME QUERY BEHAVIOR ===
-
-If the user asks about a schedule or free time for a day ("What am I doing tomorrow?", "What's my free time tomorrow?", "Do I have 2 hours free Monday?", "When can I study pharmacology tomorrow?"):
-- Set "date" in the payload to the resolved YYYY-MM-DD (e.g. "tomorrow" -> "${tomorrowDate}", "today" -> "${currentDate}").
-- NEVER substitute today's date if the user explicitly requested another day.
-- DO NOT attempt to calculate free-time minutes or write prose schedules yourself—always return a structured "get_schedule" or "get_free_time" action.
+RULES for the "date" field in scheduling:
+1. "tomorrow" → "${tomorrowDate}"
+2. "today" or "tonight" → "${currentDate}"
+3. Day of week (e.g. "Monday") → calculate YYYY-MM-DD
+4. No date stated → omit "date" or set null
+5. ALWAYS use absolute YYYY-MM-DD. NEVER use relative strings like "tomorrow".
 
 === ALLOWED AI ACTIONS & SCHEMA ===
 
-- create_task:  { "type": "create_task", "payload": { "title": string, "durationMinutes": number, "priority": "low"|"medium"|"high", "date"?: "YYYY-MM-DD", "scheduledStartMinute"?: number|null } }
-  NOTE: Include "date" ONLY when the user mentions a specific day. Omit it entirely for undated tasks. Include "scheduledStartMinute" ONLY when user specifies an explicit time of day.
+process_intent: (STRONGLY PREFERRED for all operations)
+{
+  "type": "process_intent",
+  "payload": {
+    "operation": "create_activity" | "update_activity" | "delete_activity" | "complete_activity" | "skip_activity" | "log_constraint" | "query_schedule" | "query_free_time" | "clarification" | "context_statement" | "general_conversation",
+    "targetId"?: string,        // REQUIRED for update/delete/complete/skip when ID is known
+    "targetQuery"?: string,     // Fallback description if targetId is not known
+    "category"?: "task" | "event" | "meeting" | "social" | "travel" | "reminder",
+    "title"?: string,
+    "clarificationQuestion"?: string,  // For operation: "clarification"
+    "conversationalResponse"?: string, // For operation: "general_conversation"
+    "scheduling"?: {
+      "mode": "flexible" | "fixed" | "deadline" | "preferred_window",
+      "date"?: "YYYY-MM-DD",
+      "startMinute"?: number,          // wall-clock minutes 0-1439 (e.g. 4 PM = 960)
+      "endMinute"?: number,
+      "deadlineMinute"?: number,       // for mode="deadline"
+      "durationMinutes"?: number       // ONLY if user stated duration
+    },
+    "entities"?: {
+      "people"?: string[],
+      "location"?: string,
+      "destination"?: string,
+      "organization"?: string,
+      "service"?: string,
+      "provider"?: string
+    },
+    "priority"?: "low" | "medium" | "high",
+    "executionRequirement"?: "booking" | "transport" | "communication"
+  }
+}
 
+Legacy fallback actions (use process_intent instead when possible):
+- create_task:  { "type": "create_task", "payload": { "title": string, "durationMinutes": number, "priority": "low"|"medium"|"high", "date"?: "YYYY-MM-DD", "scheduledStartMinute"?: number|null } }
 - complete_task: { "type": "complete_task", "payload": { "taskTitleQuery": string } }
 - skip_task:     { "type": "skip_task",     "payload": { "taskTitleQuery": string } }
 - delete_task:   { "type": "delete_task",   "payload": { "taskTitleQuery": string } }
 - update_task:   { "type": "update_task",   "payload": { "taskTitleQuery": string, "title"?: string, "durationMinutes"?: number, "priority"?: "low"|"medium"|"high", "date"?: string|null, "scheduledStartMinute"?: number|null } }
 - replan_day:    { "type": "replan_day" }
-- get_schedule:  { "type": "get_schedule",  "payload": { "date"?: string|null } }
+- get_schedule:  { "type": "get_schedule",  "payload": { "date"?: string|null, "scope"?: "full"|"next" } }
 - get_free_time: { "type": "get_free_time", "payload": { "date"?: string|null, "targetDurationMinutes"?: number|null, "targetTaskTitleQuery"?: string|null } }
-- clarification: { "type": "clarification", "payload": { "question": string } }
+- clarification: { "type": "clarification", "payload": { "question": string, "candidateAction"?: object } }
 
 === CLARIFICATION RULE ===
 
-If the user's request is ambiguous (e.g. "complete medicine" and multiple tasks could match),
-DO NOT GUESS. Return a "clarification" action with a polite question.
+If the request is ambiguous, DO NOT GUESS. Return a "clarification" action with a polite question.
+CRITICAL: If confirming a proposed activity ("Did you mean meeting with Narendra at 4 PM?"), include the complete proposed action as "candidateAction" inside the clarification payload.
+Example: { "type": "clarification", "payload": { "question": "Did you mean...?", "candidateAction": { "type": "process_intent", "payload": { ... full payload ... } } } }
 
 === CURRENT APP CONTEXT ===
 
-Today's date (user's timezone): ${currentDate}
-Current time (user's timezone): ${currentTime}
-Timezone: ${timezone}
-${pendingSummary}
-Existing tasks:
+Today: ${currentDate} | Time: ${currentTime} | Timezone: ${timezone}
+
+Existing activities:
 ${tasksSummary}
 
 === USER REQUEST ===
 
 "${userMessage}"
 
-=== OUTPUT FORMAT EXAMPLE ===
+=== EXAMPLE OUTPUT ===
 
 {
   "actions": [
-    { "type": "create_task", "payload": { "title": "Study", "durationMinutes": 360, "priority": "medium", "date": "${tomorrowDate}" } }
+    { 
+      "type": "process_intent", 
+      "payload": { 
+        "operation": "create_activity",
+        "category": "social",
+        "title": "Lunch with Rahul",
+        "entities": { "people": ["Rahul"] },
+        "scheduling": { "mode": "fixed", "date": "${tomorrowDate}", "startMinute": 780 }
+      }
+    }
   ]
 }`;
 }
@@ -437,9 +523,11 @@ const server = http.createServer(async (req, res) => {
         const pendingCtx = context?.pendingClarification;
 
         // Context Injection: ensure taskId & taskTitleQuery are populated from pending context if missing
-        if (pendingCtx && Array.isArray(actions)) {
+        const activeActivityId = context?.activeActivityId;
+        if (Array.isArray(actions)) {
           for (const act of actions) {
-            if (['update_task', 'complete_task', 'skip_task', 'delete_task'].includes(act.type)) {
+            // Legacy action type injection from pending clarification context
+            if (pendingCtx && ['update_task', 'complete_task', 'skip_task', 'delete_task'].includes(act.type)) {
               if (!act.payload) act.payload = {};
               if (!act.payload.taskId && pendingCtx.taskId) {
                 act.payload.taskId = pendingCtx.taskId;
@@ -448,15 +536,41 @@ const server = http.createServer(async (req, res) => {
                 act.payload.taskTitleQuery = pendingCtx.taskTitle || pendingCtx.taskTitleQuery;
               }
             }
+            // process_intent: inject targetId from active activity if missing
+            if (act.type === 'process_intent' && act.payload) {
+              const op = act.payload.operation;
+              const needsTarget = ['update_activity', 'delete_activity', 'complete_activity', 'skip_activity'].includes(op);
+              if (needsTarget && !act.payload.targetId) {
+                // Use active conversational activity ID if available
+                if (activeActivityId) {
+                  act.payload.targetId = activeActivityId;
+                } else if (pendingCtx?.taskId) {
+                  act.payload.targetId = pendingCtx.taskId;
+                }
+              }
+              // Inject targetQuery from pending context title if still missing
+              if (needsTarget && !act.payload.targetId && !act.payload.targetQuery) {
+                if (pendingCtx?.taskTitle || pendingCtx?.taskTitleQuery) {
+                  act.payload.targetQuery = pendingCtx.taskTitle || pendingCtx.taskTitleQuery;
+                }
+              }
+            }
           }
         }
 
         let pendingClarification = null;
         if (actions.length > 0 && actions[0].type === 'clarification') {
-          if (pendingCtx) {
+          const clarificationPayload = actions[0].payload;
+          if (clarificationPayload && clarificationPayload.candidateAction) {
+             pendingClarification = {
+                pendingIntent: clarificationPayload.candidateAction.type,
+                candidateAction: clarificationPayload.candidateAction,
+                question: clarificationPayload.question,
+             };
+          } else if (pendingCtx) {
             pendingClarification = pendingCtx;
           } else if (context?.tasks && Array.isArray(context.tasks)) {
-            const msgLower = (userMessage + ' ' + (actions[0].payload?.question || '')).toLowerCase();
+            const msgLower = (userMessage + ' ' + (clarificationPayload?.question || '')).toLowerCase();
             const matched = context.tasks.find((t) => {
               const tLower = t.title.toLowerCase();
               const words = tLower.split(/\s+/).filter((w) => w.length > 3);

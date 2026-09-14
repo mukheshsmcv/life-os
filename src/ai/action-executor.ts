@@ -1,26 +1,72 @@
-import { Task, TaskPriority } from '@/contexts/tasks-context';
+import { Task, TaskPriority, Event } from '@/contexts/tasks-context';
 import {
   DEFAULT_SCHEDULING_SETTINGS,
+  ScheduledBlock,
   scheduleTasks,
   SchedulingSettings,
 } from '@/lib/scheduler';
-import { formatDisplayDate, getTodayString, parseDateString } from '@/lib/date-time';
-import { AIAction, ExecutionResult } from './ai-types';
+import { formatDisplayDate, getTodayString, isValidDateString, parseDateString } from '@/lib/date-time';
+import { AIAction, CanonicalScheduling, CreateTaskPayload, ExecutionResult, ExternalExecutionRequirement, SemanticEntities } from './ai-types';
 
 export type TaskOperations = {
-  addTask: (task: { title: string; durationMinutes: number; priority: TaskPriority; date?: string | null; scheduledStartMinute?: number | null }) => void;
-  updateTask?: (id: string, updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date' | 'scheduledStartMinute'>>) => void;
+  addTask: (task: { title: string; durationMinutes: number; priority: TaskPriority; date?: string | null; scheduledStartMinute?: number | null; scheduling?: CanonicalScheduling; entities?: SemanticEntities; executionRequirement?: ExternalExecutionRequirement }) => string | void;
+  addEvent?: (event: { title: string; scheduling: CanonicalScheduling; entities?: SemanticEntities; executionRequirement?: ExternalExecutionRequirement; date?: string; startMinute?: number; endMinute?: number; notes?: string }) => string | void;
+  updateTask?: (id: string, updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date' | 'scheduledStartMinute' | 'scheduling' | 'entities' | 'executionRequirement'>>) => void;
+  updateEvent?: (id: string, updates: Partial<Pick<Event, 'title' | 'date' | 'startMinute' | 'endMinute' | 'notes' | 'scheduling' | 'entities' | 'executionRequirement'>>) => void;
   completeTask: (id: string) => void;
   skipTask: (id: string) => void;
   deleteTask: (id: string) => void;
+  deleteEvent?: (id: string) => void;
 };
 
 export type ActionExecutionContext = {
   tasks: Task[];
+  events?: Event[];
   operations: TaskOperations;
   currentTime?: Date;
   settings?: SchedulingSettings;
+  createdTasksHistory?: CreateTaskPayload[];
 };
+
+export function areCreateTasksEquivalent(
+  a: CreateTaskPayload,
+  b: CreateTaskPayload
+): boolean {
+  const normTitleA = a.title.trim().toLowerCase();
+  const normTitleB = b.title.trim().toLowerCase();
+  const dateA = a.date ?? null;
+  const dateB = b.date ?? null;
+  const startA = a.scheduledStartMinute ?? null;
+  const startB = b.scheduledStartMinute ?? null;
+
+  return (
+    normTitleA === normTitleB &&
+    a.durationMinutes === b.durationMinutes &&
+    a.priority === b.priority &&
+    dateA === dateB &&
+    startA === startB
+  );
+}
+
+export function deduplicateActions(actions: AIAction[]): AIAction[] {
+  const seenCreateTasks: CreateTaskPayload[] = [];
+  const result: AIAction[] = [];
+
+  for (const action of actions) {
+    if (action.type === 'create_task') {
+      const isDuplicate = seenCreateTasks.some((seen) =>
+        areCreateTasksEquivalent(seen, action.payload)
+      );
+      if (isDuplicate) {
+        continue;
+      }
+      seenCreateTasks.push(action.payload);
+    }
+    result.push(action);
+  }
+
+  return result;
+}
 
 function formatTime(date: Date): string {
   const hours = date.getHours();
@@ -48,13 +94,187 @@ export function executeAction(
   const settings = context.settings ?? DEFAULT_SCHEDULING_SETTINGS;
 
   switch (action.type) {
+    case 'process_intent': {
+      const { operation, title, scheduling, entities, executionRequirement, priority } = action.payload;
+
+      if (operation === 'context_statement') {
+        return { success: true, message: `Got it. (Context noted: ${title || 'availability'})` };
+      }
+
+      if (operation === 'create_activity') {
+        if (!title) return { success: false, message: 'Missing title for activity creation.' };
+        
+        const mode = scheduling?.mode ?? 'flexible';
+        const taskPriority = priority ?? 'medium';
+        const duration = scheduling?.durationMinutes; // removed ?? 60 to follow milestone 5
+        const taskDate = scheduling?.date ?? null;
+        const startMin = scheduling?.startMinute ?? null;
+        
+        let createdId: string | void = undefined;
+
+        if (mode === 'fixed') {
+          if (context.operations.addEvent) {
+            createdId = context.operations.addEvent({
+              title,
+              scheduling: scheduling!,
+              entities,
+              executionRequirement,
+              date: scheduling?.date ?? getTodayString(),
+              startMinute: scheduling?.startMinute ?? 0,
+              endMinute: scheduling?.endMinute ?? (scheduling?.startMinute ?? 0) + (duration ?? 60),
+            });
+            const dateLabel = scheduling?.date && scheduling.date !== getTodayString() ? ` on ${formatDisplayDate(scheduling.date)}` : '';
+            return {
+              success: true,
+              message: `✓ Added event "${title}"${dateLabel}.`,
+              createdId: typeof createdId === 'string' ? createdId : undefined,
+            };
+          }
+        }
+
+        createdId = context.operations.addTask({ 
+          title, 
+          durationMinutes: duration ?? 60, // Fallback to 60 only for tasks if absolutely needed by UI
+          priority: taskPriority, 
+          date: taskDate, 
+          scheduledStartMinute: startMin,
+          scheduling: scheduling!,
+          entities,
+          executionRequirement
+        });
+        
+        const dateLabel = taskDate && taskDate !== getTodayString() ? `\nScheduled for ${formatDisplayDate(taskDate)}.` : '';
+        return {
+          success: true,
+          message: `✓ Added "${title}" (${duration ?? 'unknown'} min, ${taskPriority} priority).${dateLabel}`,
+          createdId: typeof createdId === 'string' ? createdId : undefined,
+        };
+      }
+      
+      if (operation === 'query_schedule') {
+        return executeAction({ type: 'get_schedule', payload: { date: scheduling?.date } }, context);
+      }
+      if (operation === 'query_free_time') {
+        return executeAction({ type: 'get_free_time', payload: { date: scheduling?.date, targetDurationMinutes: scheduling?.durationMinutes } }, context);
+      }
+      if (operation === 'log_constraint') {
+        if (!title) return { success: false, message: 'Missing title for constraint.' };
+        context.operations.addTask({
+          title,
+          durationMinutes: 0,
+          priority: 'high',
+          date: scheduling?.date ?? null,
+          scheduledStartMinute: scheduling?.deadlineMinute ?? scheduling?.startMinute ?? null,
+          scheduling: scheduling ?? { mode: 'deadline' },
+          entities,
+          executionRequirement,
+        });
+        return { success: true, message: `✓ Logged constraint "${title}".` };
+      }
+      
+      if (operation === 'update_activity') {
+        const resolvedTaskId = (action.payload as any).targetId || (action.payload as any).taskId;
+        if (!resolvedTaskId) {
+          return { success: false, message: 'Missing targetId for update.' };
+        }
+        // Determine if it's an event or task
+        const isEvent = context.events?.some(e => e.id === resolvedTaskId);
+        if (isEvent) {
+          return executeUpdateEvent({ ...action.payload, eventId: resolvedTaskId }, context);
+        }
+        return executeAction({ type: 'update_task', payload: { ...action.payload, taskId: resolvedTaskId } as any }, context);
+      }
+
+      if (operation === 'delete_activity') {
+        const targetId = action.payload.targetId;
+        if (!targetId) {
+          return { success: false, message: 'I need to know which activity to delete. Can you be more specific?' };
+        }
+        // Try event first, then task
+        const targetEvent = context.events?.find(e => e.id === targetId);
+        if (targetEvent) {
+          if (context.operations.deleteEvent) {
+            context.operations.deleteEvent(targetId);
+            return { success: true, message: `✓ Removed "${targetEvent.title}" from your schedule.` };
+          }
+          return { success: false, message: 'Delete event operation is not available.' };
+        }
+        const targetTask = context.tasks.find(t => t.id === targetId);
+        if (targetTask) {
+          context.operations.deleteTask(targetId);
+          const updatedTasks = context.tasks.filter(t => t.id !== targetId);
+          const nextTitle = findNextScheduledTitle(updatedTasks, settings, currentTime);
+          const nextMsg = nextTitle ? `\n${nextTitle} is now next.` : '';
+          return { success: true, message: `✓ Removed "${targetTask.title}" from your plan.${nextMsg}` };
+        }
+        return { success: false, message: `I couldn't find that activity to delete.` };
+      }
+
+      if (operation === 'complete_activity') {
+        const targetId = action.payload.targetId;
+        if (!targetId) {
+          return { success: false, message: 'I need to know which activity to mark complete. Can you be more specific?' };
+        }
+        const targetTask = context.tasks.find(t => t.id === targetId);
+        if (!targetTask) {
+          return { success: false, message: `I couldn't find that activity to complete.` };
+        }
+        context.operations.completeTask(targetId);
+        const updatedTasks = context.tasks.map(t => t.id === targetId ? { ...t, status: 'completed' as const } : t);
+        const nextTitle = findNextScheduledTitle(updatedTasks, settings, currentTime);
+        const nextMsg = nextTitle ? `\n${nextTitle} is now next.` : '\nNo remaining activities scheduled today.';
+        return { success: true, message: `✓ "${targetTask.title}" marked complete.${nextMsg}` };
+      }
+
+      if (operation === 'skip_activity') {
+        const targetId = action.payload.targetId;
+        if (!targetId) {
+          return { success: false, message: 'I need to know which activity to skip. Can you be more specific?' };
+        }
+        const targetTask = context.tasks.find(t => t.id === targetId);
+        if (!targetTask) {
+          return { success: false, message: `I couldn't find that activity to skip.` };
+        }
+        context.operations.skipTask(targetId);
+        const updatedTasks = context.tasks.map(t => t.id === targetId ? { ...t, status: 'skipped' as const } : t);
+        const nextTitle = findNextScheduledTitle(updatedTasks, settings, currentTime);
+        const nextMsg = nextTitle ? `\n${nextTitle} is now next.` : '\nNo remaining activities scheduled today.';
+        return { success: true, message: `✓ Skipped "${targetTask.title}".${nextMsg}` };
+      }
+
+      if (operation === 'clarification') {
+        const q = action.payload.clarificationQuestion ?? 'Could you clarify that?';
+        return { success: false, message: q };
+      }
+
+      if (operation === 'general_conversation') {
+        return { success: true, message: action.payload.conversationalResponse || 'Hello! How can I help you today?' };
+      }
+
+      // Should never reach here for known operations
+      console.warn(`[Executor] Unhandled process_intent operation: ${operation}`);
+      return { success: false, message: `I'm not sure how to handle that request. Could you rephrase it?` };
+    }
+
     case 'create_task': {
       const { title, durationMinutes, priority, date: rawDate, scheduledStartMinute } = action.payload;
-      // Preserve null/undefined: do NOT silently default to today.
-      // null  = undated; YYYY-MM-DD = explicitly pinned to that calendar day.
+
+      if (context.createdTasksHistory) {
+        const isDuplicate = context.createdTasksHistory.some((seen) =>
+          areCreateTasksEquivalent(seen, action.payload)
+        );
+        if (isDuplicate) {
+          return {
+            success: true,
+            message: `(Duplicate creation of "${title}" skipped)`,
+          };
+        }
+        context.createdTasksHistory.push(action.payload);
+      }
+
       const taskDate = rawDate ?? null;
       const startMin = scheduledStartMinute ?? null;
-      context.operations.addTask({ title, durationMinutes, priority, date: taskDate, scheduledStartMinute: startMin });
+      const createdId = context.operations.addTask({ title, durationMinutes, priority, date: taskDate, scheduledStartMinute: startMin, scheduling: action.payload.scheduling, entities: action.payload.entities, executionRequirement: action.payload.executionRequirement });
 
       const todayStr = getTodayString();
       const updatedTasks: Task[] = [
@@ -67,6 +287,7 @@ export function executeAction(
           status: 'pending',
           scheduledStartMinute: startMin,
           date: taskDate,
+          scheduling: action.payload.scheduling || { mode: 'flexible', date: taskDate, startMinute: startMin },
         },
       ];
 
@@ -90,6 +311,7 @@ export function executeAction(
       return {
         success: true,
         message: `✓ Added "${title}" (${durationMinutes} min, ${priority} priority).${dateLabel}${nextMsg}`,
+        createdId: typeof createdId === 'string' ? createdId : undefined,
       };
     }
 
@@ -152,7 +374,7 @@ export function executeAction(
     }
 
     case 'update_task': {
-      const { taskId, title, durationMinutes, priority, date, scheduledStartMinute } = action.payload;
+      const { taskId, title, durationMinutes, priority, date, scheduledStartMinute, scheduling, entities, executionRequirement } = action.payload;
       if (!taskId) {
         return { success: false, message: 'Missing task ID for update.' };
       }
@@ -161,22 +383,36 @@ export function executeAction(
         return { success: false, message: `Task with ID '${taskId}' does not exist.` };
       }
 
-      const updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date' | 'scheduledStartMinute'>> = {};
+      const updates: Partial<Pick<Task, 'title' | 'durationMinutes' | 'priority' | 'date' | 'scheduledStartMinute' | 'scheduling' | 'entities' | 'executionRequirement'>> = {};
       if (title !== undefined) updates.title = title;
       if (durationMinutes !== undefined) updates.durationMinutes = durationMinutes;
       if (priority !== undefined) updates.priority = priority;
       if (date !== undefined) updates.date = date;
       if (scheduledStartMinute !== undefined) updates.scheduledStartMinute = scheduledStartMinute;
+      
+      if (scheduling !== undefined) {
+         updates.scheduling = { ...targetTask.scheduling, ...scheduling };
+         if (scheduling.date !== undefined) updates.date = scheduling.date;
+         if (scheduling.startMinute !== undefined) updates.scheduledStartMinute = scheduling.startMinute;
+         if (scheduling.durationMinutes !== undefined) updates.durationMinutes = scheduling.durationMinutes ?? undefined;
+      }
+      if (entities !== undefined) {
+         updates.entities = { ...targetTask.entities, ...entities };
+      }
+      if (executionRequirement !== undefined) {
+         updates.executionRequirement = executionRequirement;
+      }
 
       if (context.operations.updateTask) {
         context.operations.updateTask(taskId, updates);
       }
 
       const details: string[] = [];
-      if (title !== undefined) details.push(`title: "${title}"`);
-      if (durationMinutes !== undefined) details.push(`duration: ${durationMinutes}m`);
-      if (priority !== undefined) details.push(`priority: ${priority}`);
-      if (date !== undefined) details.push(date === null ? 'date: anytime (undated)' : `date: ${formatDisplayDate(date)}`);
+      if (updates.title !== undefined) details.push(`title: "${updates.title}"`);
+      if (updates.durationMinutes !== undefined) details.push(`duration: ${updates.durationMinutes}m`);
+      if (updates.priority !== undefined) details.push(`priority: ${updates.priority}`);
+      if (updates.date !== undefined) details.push(updates.date === null ? 'date: anytime (undated)' : `date: ${formatDisplayDate(updates.date)}`);
+      if (updates.entities?.people) details.push(`people: ${updates.entities.people.join(', ')}`);
 
       const changesMsg = details.length > 0 ? ` (${details.join(', ')})` : '';
 
@@ -185,6 +421,8 @@ export function executeAction(
         message: `✓ Updated "${targetTask.title}"${changesMsg}.`,
       };
     }
+
+
 
     case 'get_schedule': {
       const todayStr = getTodayString();
@@ -208,6 +446,37 @@ export function executeAction(
 
       const schedule = scheduleTasks(tasksForDate, settings, refDate);
       const taskMap = new Map(context.tasks.map((t) => [t.id, t]));
+
+      if (action.payload?.scope === 'next') {
+        let nextBlock: ScheduledBlock | null = null;
+        const inProgressIndex = schedule.blocks.findIndex(
+          (b) => currentTime >= b.start && currentTime < b.end
+        );
+
+        if (inProgressIndex !== -1) {
+          nextBlock = schedule.blocks[inProgressIndex + 1] ?? null;
+        } else {
+          nextBlock = schedule.blocks.find((b) => b.start > currentTime) ?? null;
+        }
+
+        if (!nextBlock) {
+          const noActivityMsg =
+            targetDateStr === todayStr
+              ? 'You have nothing else scheduled today.'
+              : `You have nothing else scheduled ${targetTitle}.`;
+          return {
+            success: true,
+            message: noActivityMsg,
+          };
+        }
+
+        const task = taskMap.get(nextBlock.taskId);
+        const title = task?.title ?? 'Activity';
+        return {
+          success: true,
+          message: `Next: ${title}, ${formatTime(nextBlock.start)}–${formatTime(nextBlock.end)}.`,
+        };
+      }
 
       if (schedule.blocks.length === 0) {
         if (schedule.unscheduledTaskIds.length > 0) {
@@ -398,4 +667,51 @@ export function executeAction(
       };
     }
   }
+}
+
+function executeUpdateEvent(payload: any, context: ActionExecutionContext): ExecutionResult {
+  const { eventId, title, date, startMinute, endMinute, notes, scheduling, entities, executionRequirement } = payload;
+  if (!eventId) {
+    return { success: false, message: 'Missing event ID for update.' };
+  }
+  const targetEvent = context.events?.find((e) => e.id === eventId);
+  if (!targetEvent) {
+    return { success: false, message: `Event with ID '${eventId}' does not exist.` };
+  }
+
+  const updates: Partial<Pick<Event, 'title' | 'date' | 'startMinute' | 'endMinute' | 'notes' | 'scheduling' | 'entities' | 'executionRequirement'>> = {};
+  if (title !== undefined) updates.title = title;
+  if (date !== undefined) updates.date = date;
+  if (startMinute !== undefined) updates.startMinute = startMinute;
+  if (endMinute !== undefined) updates.endMinute = endMinute;
+  if (notes !== undefined) updates.notes = notes;
+
+  if (scheduling !== undefined) {
+     updates.scheduling = { ...targetEvent.scheduling, ...scheduling };
+     if (scheduling.date !== undefined) updates.date = scheduling.date ?? undefined;
+     if (scheduling.startMinute !== undefined) updates.startMinute = scheduling.startMinute ?? undefined;
+     if (scheduling.endMinute !== undefined) updates.endMinute = scheduling.endMinute ?? undefined;
+  }
+  if (entities !== undefined) {
+     updates.entities = { ...targetEvent.entities, ...entities };
+  }
+  if (executionRequirement !== undefined) {
+     updates.executionRequirement = executionRequirement;
+  }
+
+  if (context.operations.updateEvent) {
+    context.operations.updateEvent(eventId, updates);
+  }
+
+  const details: string[] = [];
+  if (updates.title !== undefined) details.push(`title: "${updates.title}"`);
+  if (updates.date !== undefined) details.push(updates.date === undefined ? 'date: anytime' : `date: ${updates.date}`);
+  if (updates.entities?.people) details.push(`people: ${updates.entities.people.join(', ')}`);
+
+  const changesMsg = details.length > 0 ? ` (${details.join(', ')})` : '';
+
+  return {
+    success: true,
+    message: `✓ Updated event "${targetEvent.title}"${changesMsg}.`,
+  };
 }

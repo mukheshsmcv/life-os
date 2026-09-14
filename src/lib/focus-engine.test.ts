@@ -27,6 +27,7 @@ export function runFocusEngineTests(): { passed: number; failed: number } {
     status: 'pending',
     scheduledStartMinute: 540, // 9:00 AM
     date: '2026-09-15',
+    scheduling: { mode: "flexible" as const },
   };
 
   const res1 = determineTodayFocus({
@@ -77,6 +78,7 @@ export function runFocusEngineTests(): { passed: number; failed: number } {
     status: 'pending',
     scheduledStartMinute: 1140, // 7:00 PM
     date: '2026-09-15',
+    scheduling: { mode: "flexible" as const },
   };
   const res4 = determineTodayFocus({
     tasks: [taskExplicit],
@@ -97,6 +99,7 @@ export function runFocusEngineTests(): { passed: number; failed: number } {
     status: 'completed',
     scheduledStartMinute: 540,
     date: '2026-09-15',
+    scheduling: { mode: "flexible" as const },
   };
   const res5 = determineTodayFocus({
     tasks: [taskCompleted],
@@ -117,6 +120,7 @@ export function runFocusEngineTests(): { passed: number; failed: number } {
     status: 'skipped',
     scheduledStartMinute: 540,
     date: '2026-09-15',
+    scheduling: { mode: "flexible" as const },
   };
   const res6 = determineTodayFocus({
     tasks: [taskSkipped],
@@ -137,6 +141,7 @@ export function runFocusEngineTests(): { passed: number; failed: number } {
     status: 'pending',
     scheduledStartMinute: null,
     date: null,
+    scheduling: { mode: "flexible" as const },
   };
   const res7 = determineTodayFocus({
     tasks: [floatingTask],
@@ -157,6 +162,7 @@ export function runFocusEngineTests(): { passed: number; failed: number } {
     status: 'pending',
     scheduledStartMinute: null,
     date: '2026-09-15',
+    scheduling: { mode: "flexible" as const },
   };
   const upcomingEvent: SchedulerEvent = {
     id: 'ev-close',
@@ -199,8 +205,8 @@ export function runFocusEngineTests(): { passed: number; failed: number } {
 
   // Scenario 11: Replanning after completion
   const tasks11: Task[] = [
-    { id: 't1', title: 'Task 1', durationMinutes: 30, priority: 'high', status: 'completed', scheduledStartMinute: 500, date: '2026-09-15' },
-    { id: 't2', title: 'Task 2', durationMinutes: 30, priority: 'high', status: 'pending', scheduledStartMinute: 540, date: '2026-09-15' },
+    { id: 't1', title: 'Task 1', durationMinutes: 30, priority: 'high', status: 'completed', scheduledStartMinute: 500, date: '2026-09-15', scheduling: { mode: "flexible" as const }, },
+    { id: 't2', title: 'Task 2', durationMinutes: 30, priority: 'high', status: 'pending', scheduledStartMinute: 540, date: '2026-09-15', scheduling: { mode: "flexible" as const }, },
   ];
   const res11 = determineTodayFocus({
     tasks: tasks11,
@@ -214,8 +220,8 @@ export function runFocusEngineTests(): { passed: number; failed: number } {
 
   // Scenario 12: Replanning after skip
   const tasks12: Task[] = [
-    { id: 't1', title: 'Task 1', durationMinutes: 30, priority: 'high', status: 'skipped', scheduledStartMinute: 500, date: '2026-09-15' },
-    { id: 't2', title: 'Task 2', durationMinutes: 30, priority: 'high', status: 'pending', scheduledStartMinute: 540, date: '2026-09-15' },
+    { id: 't1', title: 'Task 1', durationMinutes: 30, priority: 'high', status: 'skipped', scheduledStartMinute: 500, date: '2026-09-15', scheduling: { mode: "flexible" as const }, },
+    { id: 't2', title: 'Task 2', durationMinutes: 30, priority: 'high', status: 'pending', scheduledStartMinute: 540, date: '2026-09-15', scheduling: { mode: "flexible" as const }, },
   ];
   const res12 = determineTodayFocus({
     tasks: tasks12,
@@ -235,7 +241,8 @@ export function runFocusEngineTests(): { passed: number; failed: number } {
     priority: 'high',
     status: 'pending',
     scheduledStartMinute: 500,
-    date: '2026-09-16', // Tomorrow
+    date: '2026-09-16',
+    scheduling: { mode: "flexible" as const }, // Tomorrow
   };
   const res13 = determineTodayFocus({
     tasks: [tomorrowTask],
@@ -256,6 +263,7 @@ export function runFocusEngineTests(): { passed: number; failed: number } {
     status: 'pending',
     scheduledStartMinute: null,
     date: null,
+    scheduling: { mode: "flexible" as const },
   };
   const res14 = determineTodayFocus({
     tasks: [undatedTask],

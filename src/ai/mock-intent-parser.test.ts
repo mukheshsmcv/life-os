@@ -406,13 +406,49 @@ export function runParserTests(): { passed: number; failed: number } {
     failed++;
   }
 
-  // Test 18: Default no-date schedule query -> preserves today (2026-09-13)
+  // Test 18: Default no-date schedule query -> preserves today (2026-09-13) and scope !== 'next'
   const defaultSch = parseIntent("what's my schedule?", mockContext);
-  if (defaultSch.success && defaultSch.actions[0]?.type === 'get_schedule' && defaultSch.actions[0].payload?.date === '2026-09-13') {
+  if (defaultSch.success && defaultSch.actions[0]?.type === 'get_schedule' && defaultSch.actions[0].payload?.date === '2026-09-13' && defaultSch.actions[0].payload?.scope !== 'next') {
     passed++;
   } else {
-    console.error(`FAIL Date Test 18: default no-date schedule failed to preserve today`);
+    console.error(`FAIL Date Test 18: default no-date schedule failed`);
     failed++;
+  }
+
+  // --- BUG 1 Regression: Next Activity Queries & Aliases ---
+  const nextAliases = [
+    "what's next?",
+    "what is next?",
+    "what's next on my schedule?",
+    "what am I doing next?",
+    "what do I do next?",
+  ];
+
+  for (const alias of nextAliases) {
+    const res = parseIntent(alias, mockContext);
+    if (res.success && res.actions[0]?.type === 'get_schedule' && res.actions[0].payload?.scope === 'next') {
+      passed++;
+    } else {
+      console.error(`FAIL Next Alias: "${alias}" did not return get_schedule with scope='next'`);
+      failed++;
+    }
+  }
+
+  // Verify normal full-schedule queries do NOT classify as next:
+  const fullQueries = [
+    "what's my schedule?",
+    "show my schedule",
+    "what am I doing today?",
+  ];
+
+  for (const fq of fullQueries) {
+    const res = parseIntent(fq, mockContext);
+    if (res.success && res.actions[0]?.type === 'get_schedule' && res.actions[0].payload?.scope !== 'next') {
+      passed++;
+    } else {
+      console.error(`FAIL Full Query: "${fq}" was incorrectly classified as scope='next'`);
+      failed++;
+    }
   }
 
   console.log(`Parser Tests Result: ${passed} PASSED, ${failed} FAILED out of ${passed + failed} tests.`);

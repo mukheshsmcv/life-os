@@ -1,14 +1,15 @@
-import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { usePathname, useRouter } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
+import { useEffect, useRef, useState } from 'react';
 import {
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
   type DimensionValue,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
 
 import { SuggestionChip } from '@/components/SuggestionChip';
 import { Task, useTasks } from '@/contexts/tasks-context';
@@ -140,16 +141,82 @@ export default function HomeScreen() {
     });
   };
 
+  // ─── Horizontal swipe gesture → Calendar ──────────────────────────────────
+  const hasNavigatedRef = useRef(false);
+  const startXRef = useRef(0);
+  const startYRef = useRef(0);
+
+  const checkSwipeAndNavigate = (
+    translationX: number,
+    translationY: number,
+    absoluteX?: number,
+    absoluteY?: number
+  ) => {
+    const startX = startXRef.current;
+    const startY = startYRef.current;
+    const totalDx = absoluteX !== undefined && startX > 0 ? absoluteX - startX : translationX;
+    const totalDy = absoluteY !== undefined && startY > 0 ? absoluteY - startY : translationY;
+
+    const dx = Math.max(translationX, totalDx);
+    const absDy = Math.max(Math.abs(translationY), Math.abs(totalDy));
+
+    const isPositiveSwipe = dx > 0;
+    const hasMinDistance = dx >= 60;
+    const isClearlyHorizontal = dx > absDy * 1.4;
+
+    if (hasNavigatedRef.current) return;
+
+    if (isPositiveSwipe && hasMinDistance && isClearlyHorizontal) {
+      hasNavigatedRef.current = true;
+      router.push('/calendar');
+    }
+  };
+
+  const swipeToCalendarGesture = Gesture.Pan()
+    .runOnJS(true)
+    .onBegin((event) => {
+      hasNavigatedRef.current = false;
+      startXRef.current = event.absoluteX;
+      startYRef.current = event.absoluteY;
+    })
+    .onUpdate((event) => {
+      checkSwipeAndNavigate(
+        event.translationX,
+        event.translationY,
+        event.absoluteX,
+        event.absoluteY
+      );
+    })
+    .onEnd((event) => {
+      checkSwipeAndNavigate(
+        event.translationX,
+        event.translationY,
+        event.absoluteX,
+        event.absoluteY
+      );
+    });
+
   return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <GestureDetector gesture={swipeToCalendarGesture}>
+      <View
+        collapsable={false}
+        style={[styles.container, { paddingTop: insets.top }]}>
+        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {/* ─── Header ─── */}
         <View style={styles.header}>
           <View>
             <Text style={styles.greeting}>{getGreeting()}</Text>
             <Text style={styles.title}>Today</Text>
           </View>
+          <Pressable 
+            onPress={() => router.push('/calendar')} 
+            style={styles.calendarIconBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Open Calendar">
+            <SymbolView name="calendar" style={{ width: 24, height: 24 }} tintColor="#A7A0FF" />
+          </Pressable>
         </View>
+
 
         {/* ─── NOW Card ─── */}
         <View style={styles.nowCard}>
@@ -254,6 +321,7 @@ export default function HomeScreen() {
         <View style={{ height: 40 }} />
       </ScrollView>
     </View>
+    </GestureDetector>
   );
 }
 
@@ -289,6 +357,14 @@ function ScheduleItem({
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
+  calendarIconBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#191C22',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   container: { flex: 1, backgroundColor: '#0B0D10' },
   content: { padding: 20, paddingBottom: 30 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },

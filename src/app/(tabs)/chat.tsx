@@ -12,7 +12,6 @@ import {
   Text,
   View,
 } from 'react-native';
-import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -24,7 +23,7 @@ import {
 } from 'expo-audio';
 
 import { validateAction } from '@/ai/action-validator';
-import { executeAction } from '@/ai/action-executor';
+import { deduplicateActions, executeAction } from '@/ai/action-executor';
 import { parseIntentWithAI } from '@/ai/ai-client';
 import { AIAction } from '@/ai/ai-types';
 import { transcribeAudio } from '@/ai/voice-client';
@@ -43,7 +42,6 @@ const SUGGESTION_CHIPS = [
   "What's next?",
   'Plan my day',
   'Free time',
-  'Add task',
   'Replan evening',
 ];
 
@@ -83,12 +81,13 @@ function actionToCard(action: AIAction): MessageAction | null {
 export default function ChatScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { tasks, addTask, updateTask, completeTask, skipTask, deleteTask } = useTasks();
+  const { tasks, events, addTask, updateTask, addEvent, updateEvent, completeTask, skipTask, deleteTask, deleteEvent } = useTasks();
 
   const [input, setInput] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [messages, setMessages] = useState<ChatMessageData[]>([]);
   const [pendingClarification, setPendingClarification] = useState<import('@/ai/ai-types').PendingClarification | null>(null);
+  const [activeActivityId, setActiveActivityId] = useState<string | null>(null);
 
   const flatListRef = useRef<FlatList<ChatMessageData>>(null);
   const isNearBottomRef = useRef<boolean>(true);
@@ -177,6 +176,7 @@ export default function ChatScreen() {
         currentTime: getCurrentTimeStringIST(),
         timezone: 'Asia/Kolkata',
         pendingClarification,
+        activeActivityId,
       });
 
       if (parseResult.pendingClarification !== undefined) {
@@ -196,11 +196,12 @@ export default function ChatScreen() {
         return;
       }
 
-      // Execute each action and collect results
+      // Execute each action and collect results (deduplicate equivalent creations first)
       const replyLines: string[] = [];
       const cards: MessageAction[] = [];
+      const actionsToExecute = deduplicateActions(parseResult.actions);
 
-      for (const action of parseResult.actions) {
+      for (const action of actionsToExecute) {
         const validation = validateAction(action, tasks);
 
         if (!validation.valid) {
@@ -210,15 +211,22 @@ export default function ChatScreen() {
 
         const execution = executeAction(validation.action, {
           tasks,
-          operations: { addTask, updateTask, completeTask, skipTask, deleteTask },
+          events,
+          operations: { addTask, updateTask, addEvent: addEvent as any, updateEvent: updateEvent as any, completeTask, skipTask, deleteTask, deleteEvent },
           currentTime: new Date(),
         });
 
         if (execution.success) {
           setPendingClarification(null);
+          
+          if (execution.createdId) {
+            setActiveActivityId(execution.createdId);
+          } else if (validation.resolvedTaskId) {
+            setActiveActivityId(validation.resolvedTaskId);
+          }
         }
 
-        replyLines.push(execution.message);
+        replyLines.push(execution.message || '');
 
         // Build inline action card from original action (before validation rewrites)
         const card = actionToCard(action);
@@ -255,7 +263,7 @@ export default function ChatScreen() {
         {
           id: `msg-err-${Date.now()}`,
           sender: 'assistant',
-          text: 'Something went wrong. Please try again.',
+          text: "I'm having trouble connecting right now. Please try again.",
           timestamp: new Date(),
         },
       ]);
@@ -305,30 +313,11 @@ export default function ChatScreen() {
       "What's next?": "What's next on my schedule?",
       'Plan my day': 'Plan my day',
       'Free time': 'How much free time do I have today?',
-      'Add task': 'Add a task',
       'Replan evening': 'Replan my evening',
     };
     const text = chipTexts[label] ?? label;
     handleSend(text);
   };
-
-  // ─── Left-edge swipe gesture → Calendar ────────────────────────────────────
-  const swipeGesture = Gesture.Pan()
-    .runOnJS(true)
-    .activeOffsetX([15, 50])
-    .failOffsetY([-15, 15])
-    .onEnd((event) => {
-      // Only trigger if started near the left edge and had meaningful rightward movement
-      const startX = event.x - event.translationX;
-      const isLeftEdge = startX < 45;
-      const hasRightwardSwipe = event.translationX > 65;
-      const isMoreHorizontalThanVertical =
-        Math.abs(event.translationX) > Math.abs(event.translationY) * 1.4;
-
-      if (isLeftEdge && hasRightwardSwipe && isMoreHorizontalThanVertical) {
-        router.push('/calendar');
-      }
-    });
 
   const isEmpty = messages.length === 0;
 
@@ -336,8 +325,7 @@ export default function ChatScreen() {
   const tabBarHeight = Platform.OS === 'android' ? 80 : 50;
 
   return (
-    <GestureDetector gesture={swipeGesture}>
-      <View style={styles.container}>
+    <View style={styles.container}>
         {/* ─── Header ─── */}
         <View style={[styles.header, { paddingTop: Math.max(insets.top, 12) }]}>
           <View style={styles.headerLeft}>
@@ -417,7 +405,6 @@ export default function ChatScreen() {
           />
         </KeyboardAvoidingView>
       </View>
-    </GestureDetector>
   );
 }
 

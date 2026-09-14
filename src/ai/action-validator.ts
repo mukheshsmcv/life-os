@@ -5,6 +5,55 @@ import { resolveTaskEntity } from './mock-intent-parser';
 
 export function validateAction(action: AIAction, tasks: Task[]): ValidationResult {
   switch (action.type) {
+    case 'process_intent': {
+      const payload = action.payload;
+      if (!payload.operation) {
+        return { valid: false, error: 'Process intent payload must contain an operation.' };
+      }
+      if (['create_activity', 'update_activity'].includes(payload.operation)) {
+        if (!payload.title || payload.title.trim().length === 0) {
+          return { valid: false, error: 'Activity title cannot be empty.' };
+        }
+        if (payload.scheduling?.date) {
+           if (!isValidDateString(payload.scheduling.date)) {
+             return {
+               valid: false,
+               error: `Invalid date "${payload.scheduling.date}". Date must be in YYYY-MM-DD format.`
+             };
+           }
+        }
+      }
+      if (payload.operation === 'update_activity' || payload.operation === 'delete_activity' || payload.operation === 'complete_activity' || payload.operation === 'skip_activity') {
+        const targetQuery = payload.targetQuery || payload.title;
+        if (!payload.targetId && (!targetQuery || !targetQuery.trim())) {
+           return { valid: false, error: 'Please specify which activity you want to target.' };
+        }
+        if (!payload.targetId && targetQuery) {
+          const matchResult = resolveTaskEntity(targetQuery, tasks);
+          if (matchResult.type === 'none') {
+            return { valid: false, error: `I couldn't find any task matching "${targetQuery}".` };
+          }
+          if (matchResult.type === 'multiple') {
+            const matchNames = matchResult.matches.map((t) => `"${t.title}"`).join(', ');
+            return {
+              valid: false,
+              clarificationNeeded: true,
+              error: `I found multiple tasks matching "${targetQuery}": ${matchNames}. Which one do you mean?`,
+            };
+          }
+          const updatedAction: AIAction = {
+            ...action,
+            payload: {
+              ...action.payload,
+              targetId: matchResult.task.id,
+            },
+          } as AIAction;
+          return { valid: true, resolvedTaskId: matchResult.task.id, action: updatedAction };
+        }
+      }
+      return { valid: true, action };
+    }
+
     case 'create_task': {
       const { title, durationMinutes, priority } = action.payload;
 

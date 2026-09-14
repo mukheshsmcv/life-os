@@ -105,6 +105,12 @@ export function AddActionModal({ visible, onClose }: Props) {
       durationMinutes: finalDuration,
       priority: taskPriority,
       date: finalDate,
+      scheduling: {
+        mode: 'flexible',
+        date: finalDate,
+        startMinute: null,
+        endMinute: null,
+      },
     });
 
     resetForm();

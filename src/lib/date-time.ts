@@ -334,3 +334,86 @@ export function parseNaturalDateString(inputStr: string, baseDateStr?: string): 
 function toYMD(year: number, month: number, day: number): string {
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
+
+/**
+ * Returns the number of days in the given month.
+ * @param year e.g. 2026
+ * @param month 1-indexed (1 = Jan, 12 = Dec)
+ */
+export function getDaysInMonth(year: number, month: number): number {
+  const d = new Date(Date.UTC(year, month, 0, 12, 0, 0));
+  return d.getUTCDate();
+}
+
+/**
+ * Returns the day of the week for the 1st of the given month.
+ * Monday = 1, Tuesday = 2, ..., Sunday = 7
+ * @param year e.g. 2026
+ * @param month 1-indexed (1 = Jan, 12 = Dec)
+ */
+export function getStartOfWeek(year: number, month: number): number {
+  const d = new Date(Date.UTC(year, month - 1, 1, 12, 0, 0));
+  const day = d.getUTCDay();
+  return day === 0 ? 7 : day;
+}
+
+/**
+ * Adds (or subtracts) a given number of months to a YYYY-MM-DD date string.
+ */
+export function addMonths(dateStr: string, offset: number): string {
+  let [y, m] = dateStr.split('-').map(Number);
+  m += offset;
+  
+  while (m > 12) {
+    m -= 12;
+    y += 1;
+  }
+  while (m < 1) {
+    m += 12;
+    y -= 1;
+  }
+  
+  return `${y}-${String(m).padStart(2, '0')}-01`;
+}
+
+/**
+ * Generates an array of YYYY-MM-DD strings for a 42-cell calendar grid.
+ */
+export function getCalendarDays(year: number, month: number): string[] {
+  const startDay = getStartOfWeek(year, month);
+  const daysInMonth = getDaysInMonth(year, month);
+  
+  let prevY = year;
+  let prevM = month - 1;
+  if (prevM < 1) {
+    prevM = 12;
+    prevY -= 1;
+  }
+  const prevDaysInMonth = getDaysInMonth(prevY, prevM);
+  
+  let nextY = year;
+  let nextM = month + 1;
+  if (nextM > 12) {
+    nextM = 1;
+    nextY += 1;
+  }
+
+  const days: string[] = [];
+  
+  const paddingStart = startDay - 1;
+  for (let i = paddingStart; i > 0; i--) {
+    const d = prevDaysInMonth - i + 1;
+    days.push(`${prevY}-${String(prevM).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+  }
+  
+  for (let i = 1; i <= daysInMonth; i++) {
+    days.push(`${year}-${String(month).padStart(2, '0')}-${String(i).padStart(2, '0')}`);
+  }
+  
+  const remaining = 42 - days.length;
+  for (let i = 1; i <= remaining; i++) {
+    days.push(`${nextY}-${String(nextM).padStart(2, '0')}-${String(i).padStart(2, '0')}`);
+  }
+  
+  return days;
+}
