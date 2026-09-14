@@ -21,6 +21,11 @@ import {
   useAudioRecorder,
   useAudioRecorderState,
 } from 'expo-audio';
+import type {
+  ExpoSpeechRecognitionErrorEvent,
+  ExpoSpeechRecognitionNativeEventMap,
+  ExpoSpeechRecognitionResultEvent,
+} from 'expo-speech-recognition';
 
 import { validateAction } from '@/ai/action-validator';
 import { deduplicateActions, executeAction } from '@/ai/action-executor';
@@ -44,6 +49,18 @@ const SUGGESTION_CHIPS = [
   'Free time',
   'Replan evening',
 ];
+
+type SpeechRecognitionModule =
+  typeof import('expo-speech-recognition').ExpoSpeechRecognitionModule;
+
+function mergeTranscript(previous: string, next: string): string {
+  const normalizedNext = next.trim();
+  if (!previous) return normalizedNext;
+  if (normalizedNext === previous || normalizedNext.startsWith(`${previous} `)) {
+    return normalizedNext;
+  }
+  return `${previous} ${normalizedNext}`;
+}
 
 /**
  * Map an AIAction to a MessageAction card descriptor.
@@ -96,6 +113,19 @@ export default function ChatScreen() {
   const [microphoneGranted, setMicrophoneGranted] = useState<boolean | null>(null);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [isSpeechRecognizing, setIsSpeechRecognizing] = useState(false);
+  const [liveTranscript, setLiveTranscript] = useState<string | undefined>(undefined);
+  const [voiceReviewing, setVoiceReviewing] = useState(false);
+
+  const speechModuleRef = useRef<SpeechRecognitionModule | null>(null);
+  const speechModuleLoadRef = useRef<Promise<SpeechRecognitionModule | null> | null>(null);
+  const speechListenersAttachedRef = useRef(false);
+  const speechSubscriptionsRef = useRef<Array<{ remove: () => void }>>([]);
+  const finalTranscriptRef = useRef('');
+  const liveTranscriptRef = useRef('');
+  const speechAudioUriRef = useRef<string | null>(null);
+  const webAudioRecordingRef = useRef(false);
+  const stopRequestedRef = useRef(false);
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
@@ -155,6 +185,7 @@ export default function ChatScreen() {
     if (!userText || isThinking) return;
 
     setInput('');
+    setVoiceReviewing(false);
     Keyboard.dismiss();
     isNearBottomRef.current = true;
 
@@ -272,9 +303,144 @@ export default function ChatScreen() {
     }
   };
 
+  const finalizeVoiceReview = async (fallbackTranscript: string, recordingUri: string | null) => {
+    let transcript = fallbackTranscript;
+
+    if (recordingUri) {
+      setIsTranscribing(true);
+      try {
+        transcript = await transcribeAudio(recordingUri);
+      } catch (error) {
+        setVoiceError(
+          error instanceof Error
+            ? `Final transcription failed. Review the live transcript before sending. ${error.message}`
+            : 'Final transcription failed. Review the live transcript before sending.'
+        );
+      } finally {
+        setIsTranscribing(false);
+      }
+    }
+
+    if (!transcript.trim()) {
+      setVoiceError('No speech was detected.');
+      return;
+    }
+
+    setInput(transcript.trim());
+    setVoiceReviewing(true);
+  };
+
+  const attachSpeechListeners = (module: SpeechRecognitionModule) => {
+    if (speechListenersAttachedRef.current) return;
+
+    speechSubscriptionsRef.current = [
+      module.addListener('start', () => {
+        setIsSpeechRecognizing(true);
+        setIsTranscribing(false);
+      }),
+      module.addListener('result', (event: ExpoSpeechRecognitionResultEvent) => {
+        const transcript = event.results[0]?.transcript?.trim() ?? '';
+        if (!transcript) return;
+
+        if (event.isFinal) {
+          finalTranscriptRef.current = mergeTranscript(finalTranscriptRef.current, transcript);
+          liveTranscriptRef.current = finalTranscriptRef.current;
+        } else {
+          liveTranscriptRef.current = mergeTranscript(finalTranscriptRef.current, transcript);
+        }
+        setLiveTranscript(liveTranscriptRef.current);
+      }),
+      module.addListener('error', (event: ExpoSpeechRecognitionErrorEvent) => {
+        setIsSpeechRecognizing(false);
+        setIsTranscribing(false);
+        stopRequestedRef.current = false;
+        finalTranscriptRef.current = '';
+        liveTranscriptRef.current = '';
+        speechAudioUriRef.current = null;
+        setLiveTranscript(undefined);
+
+        if (event.error !== 'aborted') {
+          setVoiceError(event.message || 'Live speech recognition failed.');
+        }
+      }),
+      module.addListener(
+        'audioend',
+        (event: ExpoSpeechRecognitionNativeEventMap['audioend']) => {
+          if (event.uri) {
+            speechAudioUriRef.current = event.uri;
+          }
+        }
+      ),
+      module.addListener('end', () => {
+        const shouldSubmit = stopRequestedRef.current;
+        const transcript = (finalTranscriptRef.current || liveTranscriptRef.current).trim();
+        const recordingUri = speechAudioUriRef.current;
+
+        setIsSpeechRecognizing(false);
+        setIsTranscribing(false);
+        stopRequestedRef.current = false;
+        finalTranscriptRef.current = '';
+        liveTranscriptRef.current = '';
+        speechAudioUriRef.current = null;
+        setLiveTranscript(undefined);
+
+        if (!shouldSubmit) return;
+        void finalizeVoiceReview(transcript, recordingUri);
+      }),
+    ];
+    speechListenersAttachedRef.current = true;
+  };
+
+  const loadSpeechRecognitionModule = async (): Promise<SpeechRecognitionModule | null> => {
+    if (speechModuleRef.current) return speechModuleRef.current;
+    if (speechModuleLoadRef.current) return speechModuleLoadRef.current;
+
+    speechModuleLoadRef.current = import('expo-speech-recognition')
+      .then(({ ExpoSpeechRecognitionModule }) => {
+        speechModuleRef.current = ExpoSpeechRecognitionModule;
+        attachSpeechListeners(ExpoSpeechRecognitionModule);
+        return ExpoSpeechRecognitionModule;
+      })
+      .catch(() => null);
+
+    return speechModuleLoadRef.current;
+  };
+
+  useEffect(() => {
+    void loadSpeechRecognitionModule();
+
+    return () => {
+      speechSubscriptionsRef.current.forEach((subscription) => subscription.remove());
+      speechSubscriptionsRef.current = [];
+      speechListenersAttachedRef.current = false;
+    };
+  }, []);
+
   const handleVoicePress = async () => {
     if (isTranscribing) return;
     setVoiceError(null);
+
+    if (isSpeechRecognizing) {
+      const speechModule = speechModuleRef.current;
+      if (!speechModule) return;
+
+      setIsTranscribing(true);
+      stopRequestedRef.current = true;
+      if (Platform.OS === 'web' && webAudioRecordingRef.current) {
+        try {
+          await audioRecorder.stop();
+          speechAudioUriRef.current = audioRecorder.uri;
+        } catch (error) {
+          setVoiceError(
+            error instanceof Error ? error.message : 'Unable to save the browser recording.'
+          );
+        } finally {
+          webAudioRecordingRef.current = false;
+        }
+      }
+      speechModule.stop();
+      return;
+    }
 
     if (recorderState.isRecording) {
       try {
@@ -287,7 +453,8 @@ export default function ChatScreen() {
         setIsTranscribing(true);
         const transcript = await transcribeAudio(recordingUri);
         setIsTranscribing(false);
-        await handleSend(transcript);
+        setInput(transcript);
+        setVoiceReviewing(true);
       } catch (error) {
         setIsTranscribing(false);
         setVoiceError(error instanceof Error ? error.message : 'Voice transcription failed.');
@@ -295,16 +462,90 @@ export default function ChatScreen() {
       return;
     }
 
-    if (microphoneGranted !== true) {
-      setVoiceError('Microphone permission is required for voice commands.');
-      return;
-    }
-
     try {
+      setVoiceReviewing(false);
+      const speechModule = await loadSpeechRecognitionModule();
+      if (speechModule) {
+        const permission = await speechModule.requestPermissionsAsync();
+        if (!permission.granted) {
+          setVoiceError('Microphone and speech recognition permissions are required.');
+          return;
+        }
+
+        finalTranscriptRef.current = '';
+        liveTranscriptRef.current = '';
+        speechAudioUriRef.current = null;
+        setLiveTranscript('');
+        stopRequestedRef.current = false;
+        if (Platform.OS === 'web') {
+          try {
+            await audioRecorder.prepareToRecordAsync();
+            audioRecorder.record();
+            webAudioRecordingRef.current = true;
+          } catch (error) {
+            setVoiceError(
+              error instanceof Error
+                ? `Live transcription is active, but final audio capture failed. ${error.message}`
+                : 'Live transcription is active, but final audio capture failed.'
+            );
+          }
+        }
+        speechModule.start({
+          lang: 'en-US',
+          interimResults: true,
+          continuous: true,
+          maxAlternatives: 1,
+          recordingOptions: { persist: true },
+        });
+        setIsSpeechRecognizing(true);
+        return;
+      }
+
+      if (microphoneGranted !== true) {
+        setVoiceError('Microphone permission is required for voice commands.');
+        return;
+      }
+
       await audioRecorder.prepareToRecordAsync();
       audioRecorder.record();
     } catch (error) {
       setVoiceError(error instanceof Error ? error.message : 'Unable to start recording.');
+    }
+  };
+
+  const handleVoiceCancel = async () => {
+    setVoiceError(null);
+    setVoiceReviewing(false);
+    stopRequestedRef.current = false;
+    finalTranscriptRef.current = '';
+    liveTranscriptRef.current = '';
+    speechAudioUriRef.current = null;
+    setLiveTranscript(undefined);
+
+    if (isSpeechRecognizing) {
+      if (Platform.OS === 'web' && webAudioRecordingRef.current) {
+        try {
+          await audioRecorder.stop();
+        } catch (error) {
+          setVoiceError(
+            error instanceof Error ? error.message : 'Unable to discard the browser recording.'
+          );
+        } finally {
+          webAudioRecordingRef.current = false;
+        }
+      }
+      speechModuleRef.current?.abort();
+      setIsSpeechRecognizing(false);
+      setIsTranscribing(false);
+      return;
+    }
+
+    if (recorderState.isRecording) {
+      try {
+        await audioRecorder.stop();
+      } catch (error) {
+        setVoiceError(error instanceof Error ? error.message : 'Unable to cancel recording.');
+      }
     }
   };
 
@@ -398,9 +639,16 @@ export default function ChatScreen() {
             onSend={() => handleSend()}
             disabled={isThinking}
             onVoicePress={() => void handleVoicePress()}
+            onVoiceCancel={() => void handleVoiceCancel()}
             voiceState={
-              isTranscribing ? 'transcribing' : recorderState.isRecording ? 'recording' : 'idle'
+              isTranscribing
+                ? 'transcribing'
+                : isSpeechRecognizing || recorderState.isRecording
+                  ? 'recording'
+                  : 'idle'
             }
+            voiceTranscript={isSpeechRecognizing ? liveTranscript : undefined}
+            voiceReviewing={voiceReviewing}
             voiceError={voiceError}
           />
         </KeyboardAvoidingView>

@@ -1,18 +1,9 @@
-if (typeof window === 'undefined' && typeof globalThis !== 'undefined') {
-  const mockMemoryStore = new Map<string, string>();
-  (globalThis as any).window = (globalThis as any).window || {
-    localStorage: {
-      getItem: (key: string) => mockMemoryStore.get(key) ?? null,
-      setItem: (key: string, value: string) => mockMemoryStore.set(key, value),
-      removeItem: (key: string) => mockMemoryStore.delete(key),
-      clear: () => mockMemoryStore.clear(),
-    },
-  };
-}
-
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 import { Task, Event } from '@/contexts/tasks-context';
 import { STORAGE_KEY, CURRENT_STORAGE_VERSION, StorageState } from './types';
+
+const isWebServer = Platform.OS === 'web' && typeof document === 'undefined';
 
 function isValidTask(task: unknown): task is Task {
   if (!task || typeof task !== 'object') return false;
@@ -48,6 +39,8 @@ function isValidEvent(event: unknown): event is Event {
 }
 
 export async function loadStorageState(): Promise<{ tasks: Task[]; events: Event[] } | null> {
+  if (isWebServer) return null;
+
   try {
     const jsonStr = await AsyncStorage.getItem(STORAGE_KEY);
     if (!jsonStr) return null;
@@ -104,6 +97,8 @@ export async function loadStorageState(): Promise<{ tasks: Task[]; events: Event
 }
 
 export async function saveStorageState(tasks: Task[], events: Event[]): Promise<boolean> {
+  if (isWebServer) return true;
+
   try {
     const payload: StorageState = {
       version: CURRENT_STORAGE_VERSION,

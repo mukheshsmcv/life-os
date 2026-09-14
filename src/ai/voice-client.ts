@@ -20,6 +20,8 @@ function getAudioMetadata(uri: string): { name: string; type: string } {
       return { name: 'recording.webm', type: 'audio/webm' };
     case '3gp':
       return { name: 'recording.3gp', type: 'audio/3gpp' };
+    case 'caf':
+      return { name: 'recording.caf', type: 'audio/x-caf' };
     case 'mp3':
       return { name: 'recording.mp3', type: 'audio/mpeg' };
     case 'm4a':
@@ -39,24 +41,42 @@ function isTranscriptionResponse(value: unknown): value is TranscriptionResponse
 }
 
 export async function transcribeAudio(recordingUri: string): Promise<string> {
-  if (Platform.OS === 'web') {
-    throw new Error('Voice transcription is currently supported on Android and iOS only.');
-  }
-
   if (!recordingUri) {
     throw new Error('No recording was produced.');
   }
 
-  const audioFile = new File(recordingUri);
-  const metadata = getAudioMetadata(recordingUri);
-  const response = await expoFetch(`${getDevServerBaseUrl()}/api/transcribe`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': metadata.type,
-      'X-Audio-Filename': metadata.name,
-    },
-    body: audioFile,
-  });
+  const metadata =
+    Platform.OS === 'web'
+      ? { name: 'recording.webm', type: 'audio/webm' }
+      : getAudioMetadata(recordingUri);
+  const response =
+    Platform.OS === 'web'
+      ? await (async () => {
+          const audioResponse = await globalThis.fetch(recordingUri);
+          if (!audioResponse.ok) {
+            throw new Error('Unable to read the browser recording.');
+          }
+          const audioBlob = await audioResponse.blob();
+          return globalThis.fetch(`${getDevServerBaseUrl()}/api/transcribe`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': metadata.type,
+              'X-Audio-Filename': metadata.name,
+            },
+            body: audioBlob,
+          });
+        })()
+      : await (() => {
+          const audioFile = new File(recordingUri);
+          return expoFetch(`${getDevServerBaseUrl()}/api/transcribe`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': metadata.type,
+              'X-Audio-Filename': metadata.name,
+            },
+            body: audioFile,
+          });
+        })();
 
   const data: unknown = await response.json();
   if (!response.ok) {

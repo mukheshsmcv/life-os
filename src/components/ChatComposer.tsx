@@ -19,7 +19,10 @@ type Props = {
   disabled?: boolean;
   placeholder?: string;
   onVoicePress?: () => void;
+  onVoiceCancel?: () => void;
   voiceState?: 'idle' | 'recording' | 'transcribing';
+  voiceTranscript?: string;
+  voiceReviewing?: boolean;
   voiceError?: string | null;
 };
 
@@ -30,7 +33,10 @@ export function ChatComposer({
   disabled,
   placeholder,
   onVoicePress,
+  onVoiceCancel,
   voiceState = 'idle',
+  voiceTranscript,
+  voiceReviewing,
   voiceError,
 }: Props) {
   const [inputHeight, setInputHeight] = useState(MIN_HEIGHT);
@@ -46,6 +52,17 @@ export function ChatComposer({
 
   return (
     <View style={styles.container}>
+      {voiceState === 'recording' && voiceTranscript !== undefined && (
+        <View style={styles.voicePreview}>
+          <Text style={styles.voicePreviewLabel}>Live transcript</Text>
+          <Text style={styles.voicePreviewText}>
+            {voiceTranscript || 'Listening…'}
+          </Text>
+        </View>
+      )}
+      {voiceReviewing && voiceState === 'idle' && (
+        <Text style={styles.voiceReviewHint}>Review the transcript, edit if needed, then send.</Text>
+      )}
       <View style={styles.row}>
         <TextInput
           value={value}
@@ -61,20 +78,32 @@ export function ChatComposer({
           editable={!disabled}
         />
         {onVoicePress && (
-          <Pressable
-            style={[
-              styles.voiceButton,
-              voiceState === 'recording' && styles.voiceButtonRecording,
-              voiceDisabled && styles.voiceButtonDisabled,
-            ]}
-            onPress={voiceDisabled ? undefined : onVoicePress}
-            accessibilityRole="button"
-            accessibilityLabel={voiceState === 'recording' ? 'Stop recording' : 'Record voice command'}
-            accessibilityState={{ disabled: voiceDisabled }}>
-            <Text style={styles.voiceText}>
-              {voiceState === 'transcribing' ? '...' : voiceState === 'recording' ? 'Stop' : 'Mic'}
-            </Text>
-          </Pressable>
+          <>
+            <Pressable
+              style={[
+                styles.voiceButton,
+                voiceState === 'recording' && styles.voiceButtonRecording,
+                voiceDisabled && styles.voiceButtonDisabled,
+              ]}
+              onPress={voiceDisabled ? undefined : onVoicePress}
+              accessibilityRole="button"
+              accessibilityLabel={voiceState === 'recording' ? 'Stop recording' : 'Record voice command'}
+              accessibilityState={{ disabled: voiceDisabled }}>
+              <Text style={styles.voiceText}>
+                {voiceState === 'transcribing' ? '...' : voiceState === 'recording' ? 'Stop' : 'Mic'}
+              </Text>
+            </Pressable>
+            {voiceState === 'recording' && onVoiceCancel && (
+              <Pressable
+                style={[styles.cancelButton, voiceDisabled && styles.voiceButtonDisabled]}
+                onPress={voiceDisabled ? undefined : onVoiceCancel}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel voice recording"
+                accessibilityState={{ disabled: voiceDisabled }}>
+                <Text style={styles.cancelText}>Cancel</Text>
+              </Pressable>
+            )}
+          </>
         )}
         <Pressable
           style={[styles.sendButton, !canSend && styles.sendButtonDisabled]}
@@ -155,9 +184,47 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
+  cancelButton: {
+    height: 42,
+    borderRadius: 21,
+    paddingHorizontal: 12,
+    backgroundColor: '#252932',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cancelText: {
+    color: '#FF9A9A',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   voiceError: {
     color: '#FF9A9A',
     fontSize: 12,
     paddingTop: 8,
+  },
+  voiceReviewHint: {
+    color: '#8D94A3',
+    fontSize: 12,
+    paddingBottom: 8,
+  },
+  voicePreview: {
+    marginBottom: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 14,
+    backgroundColor: '#171A20',
+    borderWidth: 1,
+    borderColor: '#2B303A',
+  },
+  voicePreviewLabel: {
+    color: '#8D94A3',
+    fontSize: 11,
+    fontWeight: '600',
+    marginBottom: 3,
+  },
+  voicePreviewText: {
+    color: '#E8E9EC',
+    fontSize: 14,
+    lineHeight: 20,
   },
 });

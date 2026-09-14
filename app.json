@@ -8,7 +8,11 @@
     "scheme": "lifeos",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "infoPlist": {
+        "NSSpeechRecognitionUsageDescription": "Allow Life OS to use speech recognition for live voice commands.",
+        "NSMicrophoneUsageDescription": "Allow Life OS to access your microphone for live voice commands."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -17,7 +21,14 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+      ],
+      "package": "com.anonymous.lifeos"
     },
     "web": {
       "output": "static",
@@ -29,6 +40,16 @@
         "expo-audio",
         {
           "microphonePermission": "Allow Life OS to access your microphone for voice commands."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow Life OS to access your microphone for live voice commands.",
+          "speechRecognitionPermission": "Allow Life OS to use speech recognition for live voice commands.",
+          "androidSpeechServicePackages": [
+            "com.google.android.googlequicksearchbox"
+          ]
         }
       ],
       [
