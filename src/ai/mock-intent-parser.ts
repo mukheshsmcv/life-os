@@ -562,7 +562,55 @@ export function parseIntent(userMessage: string, context?: AIParseContext): Pars
     };
   }
 
-  // 1b. Get full schedule queries
+  // 1b. Current state queries
+  const isCurrentStateQuery =
+    normalized.includes('what should i do now') ||
+    normalized.includes('what am i supposed to do now') ||
+    normalized.includes('what should i be doing') ||
+    normalized.includes('what am i currently doing') ||
+    normalized.includes('what is running');
+
+  if (isCurrentStateQuery) {
+    return {
+      success: true,
+      actions: [{ type: 'process_intent', payload: { operation: 'query_current_state' } }],
+      pendingClarification: null,
+    };
+  }
+
+  // 1c. Day status queries
+  const isDayStatusQuery =
+    normalized.includes('whats left today') ||
+    normalized.includes('what is left today') ||
+    normalized.includes('what do i still have to do') ||
+    normalized.includes('am i done') ||
+    normalized.includes('am i finished') ||
+    normalized.includes('how much work do i have left');
+
+  if (isDayStatusQuery) {
+    return {
+      success: true,
+      actions: [{ type: 'process_intent', payload: { operation: 'query_day_status' } }],
+      pendingClarification: null,
+    };
+  }
+
+  // 1d. Feasibility queries
+  const isFeasibilityQuery =
+    normalized.includes('do i have enough time') ||
+    normalized.includes('can i fit') ||
+    /can i (?:study|work|run|gym) for \d+/.test(normalized);
+
+  if (isFeasibilityQuery) {
+    const dur = parseDurationMinutes(normalized) || 30;
+    return {
+      success: true,
+      actions: [{ type: 'process_intent', payload: { operation: 'query_feasibility', scheduling: { mode: 'flexible', durationMinutes: dur } } }],
+      pendingClarification: null,
+    };
+  }
+
+  // 1e. Get full schedule queries
   const isScheduleQuery =
     normalized === 'schedule' ||
     normalized.includes('whats my schedule') ||

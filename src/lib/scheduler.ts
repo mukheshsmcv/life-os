@@ -5,6 +5,12 @@ export type SchedulerTask = {
   priority: SchedulerPriority;
   status: 'pending' | 'completed' | 'skipped';
   scheduledStartMinute: number | null;
+  execution?: {
+    activeState: 'planned' | 'running' | 'paused';
+    actualStartMinute?: number;
+    totalPausedMinutes: number;
+    lastPausedAtMinute?: number;
+  };
 };
 
 export type SchedulingSettings = {
@@ -160,8 +166,24 @@ export function scheduleTasks(
     }
   }
 
+  const currentMinute = currentDate.getHours() * 60 + currentDate.getMinutes();
+
+  // 1. Process RUNNING tasks first
+  const runningTasks = pendingTasks.filter((task) => task.execution?.activeState === 'running');
+  for (const task of runningTasks) {
+    const actualStart = task.execution?.actualStartMinute ?? currentMinute;
+    const completed = (currentMinute - actualStart) - (task.execution?.totalPausedMinutes || 0);
+    const remaining = Math.max(0, task.durationMinutes - Math.max(0, Math.floor(completed)));
+    blocks.push({
+      taskId: task.id,
+      startMinute: actualStart,
+      endMinute: Math.max(currentMinute, actualStart) + remaining,
+    });
+  }
+
+  // 2. Process FIXED tasks that are NOT running
   const fixedTasks = pendingTasks
-    .filter((task) => task.scheduledStartMinute !== null)
+    .filter((task) => task.scheduledStartMinute !== null && task.execution?.activeState !== 'running')
     .sort(
       (left, right) =>
         left.scheduledStartMinute! - right.scheduledStartMinute! ||
@@ -171,6 +193,9 @@ export function scheduleTasks(
   for (const task of fixedTasks) {
     const startMinute = task.scheduledStartMinute!;
     const endMinute = startMinute + task.durationMinutes;
+
+    // Fixed tasks remain exactly where they are scheduled, even if they are in the past.
+    // They will naturally fall out of NOW / UP NEXT but remain in the day's history.
     const previousBlock = sortBlocks(blocks).at(-1);
     const fitsWindow =
       startMinute >= settings.planningStartMinute && endMinute <= settings.planningEndMinute;
@@ -185,10 +210,11 @@ export function scheduleTasks(
     blocks.push({ taskId: task.id, startMinute, endMinute });
   }
 
-  const currentMinute = currentDate.getHours() * 60 + currentDate.getMinutes();
   const earliestStartMinute = Math.max(settings.planningStartMinute, currentMinute);
+  
+  // 3. Process AUTOMATIC tasks and PAUSED tasks
   const automaticTasks = pendingTasks
-    .filter((task) => task.scheduledStartMinute === null)
+    .filter((task) => task.scheduledStartMinute === null && task.execution?.activeState !== 'running')
     .sort(
       (left, right) =>
         priorityRank[left.priority] - priorityRank[right.priority] ||
@@ -199,13 +225,28 @@ export function scheduleTasks(
     const remainingTasks = automaticTasks.filter((task) => task.priority === priority);
 
     while (remainingTasks.length > 0) {
+      // Adjust duration for paused tasks
+      const originalTask = remainingTasks[0];
+      let effectiveDuration = originalTask.durationMinutes;
+      if (originalTask.execution?.activeState === 'paused') {
+         const actualStart = originalTask.execution.actualStartMinute ?? earliestStartMinute;
+         const lastPaused = originalTask.execution.lastPausedAtMinute ?? currentMinute;
+         const completed = (lastPaused - actualStart) - (originalTask.execution.totalPausedMinutes || 0);
+         effectiveDuration = Math.max(1, originalTask.durationMinutes - Math.max(0, Math.floor(completed)));
+      }
+
+      // Temporarily mutate duration for chooseNextTask logic
+      const taskWithEffectiveDuration = { ...originalTask, durationMinutes: effectiveDuration };
+
       const { task, startMinute } = chooseNextTask(
-        remainingTasks,
+        [taskWithEffectiveDuration, ...remainingTasks.slice(1)],
         blocks,
         earliestStartMinute,
         settings
       );
-      remainingTasks.splice(remainingTasks.indexOf(task), 1);
+      
+      const idx = remainingTasks.findIndex(t => t.id === task.id);
+      if (idx !== -1) remainingTasks.splice(idx, 1);
 
       if (startMinute === null) {
         unscheduledTaskIds.push(task.id);

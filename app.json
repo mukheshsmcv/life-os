@@ -1,34 +1,33 @@
 {
   "expo": {
-    "name": "life-os",
-    "slug": "life-os",
+    "name": "Space Time",
+    "slug": "space-time",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
-    "scheme": "lifeos",
+    "icon": "./assets/images/space time.png",
+    "scheme": "spacetime",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon",
+      "icon": "./assets/images/space time.png",
       "infoPlist": {
-        "NSSpeechRecognitionUsageDescription": "Allow Life OS to use speech recognition for live voice commands.",
-        "NSMicrophoneUsageDescription": "Allow Life OS to access your microphone for live voice commands."
+        "NSSpeechRecognitionUsageDescription": "Allow Space Time to use speech recognition for live voice commands.",
+        "NSMicrophoneUsageDescription": "Allow Space Time to access your microphone for live voice commands."
       }
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "backgroundColor": "#0B0D10",
+        "foregroundImage": "./assets/images/space time.png"
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.POST_NOTIFICATIONS"
       ],
-      "package": "com.anonymous.lifeos"
+      "package": "com.anonymous.spacetime"
     },
     "web": {
       "output": "static",
@@ -37,16 +36,23 @@
     "plugins": [
       "expo-router",
       [
+        "expo-notifications",
+        {
+          "color": "#A7A0FF",
+          "defaultChannel": "space-time-default"
+        }
+      ],
+      [
         "expo-audio",
         {
-          "microphonePermission": "Allow Life OS to access your microphone for voice commands."
+          "microphonePermission": "Allow Space Time to access your microphone for voice commands."
         }
       ],
       [
         "expo-speech-recognition",
         {
-          "microphonePermission": "Allow Life OS to access your microphone for live voice commands.",
-          "speechRecognitionPermission": "Allow Life OS to use speech recognition for live voice commands.",
+          "microphonePermission": "Allow Space Time to access your microphone for live voice commands.",
+          "speechRecognitionPermission": "Allow Space Time to use speech recognition for live voice commands.",
           "androidSpeechServicePackages": [
             "com.google.android.googlequicksearchbox"
           ]

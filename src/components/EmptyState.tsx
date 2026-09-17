@@ -23,7 +23,7 @@ export function EmptyState({ onSelectPrompt }: Props) {
         <View style={styles.logoMark}>
           <Text style={styles.logoSymbol}>✦</Text>
         </View>
-        <Text style={styles.brandName}>Life OS</Text>
+        <Text style={styles.brandName}>Space Time</Text>
         <Text style={styles.tagline}>Tell me what you want to get done.</Text>
       </View>
 

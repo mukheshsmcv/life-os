@@ -40,7 +40,6 @@ export type DetermineFocusOptions = {
   events?: SchedulerEvent[];
   currentDate: Date;
   settings?: SchedulingSettings;
-  pausedActivityId?: string | null;
   /** Injectable minute of day (0-1439). If omitted, derived from currentDate. */
   currentMinute?: number;
 };
@@ -123,10 +122,15 @@ export function determineTodayFocus(options: DetermineFocusOptions): FocusEngine
     }
   });
 
-  // 4. Read state purely from scheduler output
-  const activeItem = scheduledItems.find(
-    (item) => currentMinute >= item.startMinute && currentMinute < item.endMinute
-  );
+  // 4. Read state purely from scheduler output and execution state
+  const runningTask = todayTasks.find((t) => t.execution?.activeState === 'running');
+  
+  let activeItem = runningTask ? scheduledItems.find((item) => item.id === runningTask.id) : undefined;
+  if (!activeItem) {
+    activeItem = scheduledItems.find(
+      (item) => currentMinute >= item.startMinute && currentMinute < item.endMinute
+    );
+  }
 
   const upcomingItems = scheduledItems.filter((item) => item.startMinute > currentMinute);
   const nextBlock = upcomingItems[0];
@@ -138,16 +142,8 @@ export function determineTodayFocus(options: DetermineFocusOptions): FocusEngine
     activeItem.task?.scheduledStartMinute == null;
 
   // Handle Paused Activity
-  let isPaused = false;
-  let pausedTask: Task | undefined;
-  if (options.pausedActivityId) {
-    pausedTask = todayTasks.find(
-      (t) => t.id === options.pausedActivityId && t.status === 'pending'
-    );
-    if (pausedTask) {
-      isPaused = true;
-    }
-  }
+  const pausedTask = todayTasks.find((t) => t.execution?.activeState === 'paused');
+  const isPaused = !!pausedTask;
 
   let stateKind: FocusStateKind;
   let nowItem: FocusItem | null = null;

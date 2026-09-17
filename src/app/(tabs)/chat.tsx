@@ -1,18 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  FlatList,
-  Keyboard,
   KeyboardAvoidingView,
   NativeScrollEvent,
   NativeSyntheticEvent,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { Gesture, GestureDetector, FlatList, ScrollView } from 'react-native-gesture-handler';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   AudioModule,
@@ -98,13 +96,14 @@ function actionToCard(action: AIAction): MessageAction | null {
 export default function ChatScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const params = useLocalSearchParams<{ taskId?: string }>();
   const { tasks, events, addTask, updateTask, addEvent, updateEvent, completeTask, skipTask, deleteTask, deleteEvent } = useTasks();
 
   const [input, setInput] = useState('');
   const [isThinking, setIsThinking] = useState(false);
   const [messages, setMessages] = useState<ChatMessageData[]>([]);
   const [pendingClarification, setPendingClarification] = useState<import('@/ai/ai-types').PendingClarification | null>(null);
-  const [activeActivityId, setActiveActivityId] = useState<string | null>(null);
+  const [activeActivityId, setActiveActivityId] = useState<string | null>(params.taskId || null);
 
   const flatListRef = useRef<FlatList<ChatMessageData>>(null);
   const isNearBottomRef = useRef<boolean>(true);
@@ -201,6 +200,8 @@ export default function ChatScreen() {
     setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 50);
 
     try {
+      const snapshot = import('@/lib/current-state').then(m => m.getCurrentStateSnapshot(tasks, events || [], new Date()));
+      
       const parseResult = await parseIntentWithAI(userText, {
         tasks,
         currentDate: getTodayString(),
@@ -208,6 +209,7 @@ export default function ChatScreen() {
         timezone: 'Asia/Kolkata',
         pendingClarification,
         activeActivityId,
+        currentStateSnapshot: await snapshot,
       });
 
       if (parseResult.pendingClarification !== undefined) {
@@ -565,15 +567,74 @@ export default function ChatScreen() {
   // Bottom padding: native tab bar on Android is approximately 80px
   const tabBarHeight = Platform.OS === 'android' ? 80 : 50;
 
+  const hasNavigatedRef = useRef(false);
+  const startXRef = useRef(0);
+  const startYRef = useRef(0);
+
+  const checkSwipeAndNavigate = (
+    translationX: number,
+    translationY: number,
+    absoluteX?: number,
+    absoluteY?: number
+  ) => {
+    const startX = startXRef.current;
+    const startY = startYRef.current;
+    const totalDx = absoluteX !== undefined && startX > 0 ? absoluteX - startX : translationX;
+    const totalDy = absoluteY !== undefined && startY > 0 ? absoluteY - startY : translationY;
+
+    const dx = Math.max(Math.abs(translationX), Math.abs(totalDx));
+    const absDy = Math.max(Math.abs(translationY), Math.abs(totalDy));
+
+    const isNegativeSwipe = translationX < 0 || (absoluteX !== undefined && startX > 0 && absoluteX - startX < 0);
+    const isPositiveSwipe = translationX > 0 || (absoluteX !== undefined && startX > 0 && absoluteX - startX > 0);
+    const hasMinDistance = dx >= 60;
+    const isClearlyHorizontal = dx > absDy * 1.4;
+
+    if (hasNavigatedRef.current) return;
+
+    if (hasMinDistance && isClearlyHorizontal) {
+      if (isPositiveSwipe) {
+        hasNavigatedRef.current = true;
+        router.navigate('/messenger');
+      }
+    }
+  };
+
+  const swipeToMessagesGesture = Gesture.Pan()
+    .activeOffsetX([-20, 20])
+    .runOnJS(true)
+    .onBegin((event) => {
+      hasNavigatedRef.current = false;
+      startXRef.current = event.absoluteX;
+      startYRef.current = event.absoluteY;
+    })
+    .onUpdate((event) => {
+      checkSwipeAndNavigate(
+        event.translationX,
+        event.translationY,
+        event.absoluteX,
+        event.absoluteY
+      );
+    })
+    .onEnd((event) => {
+      checkSwipeAndNavigate(
+        event.translationX,
+        event.translationY,
+        event.absoluteX,
+        event.absoluteY
+      );
+    });
+
   return (
-    <View style={styles.container}>
+    <GestureDetector gesture={swipeToMessagesGesture}>
+      <View style={styles.container} collapsable={false}>
         {/* ─── Header ─── */}
         <View style={[styles.header, { paddingTop: Math.max(insets.top, 12) }]}>
           <View style={styles.headerLeft}>
             <View style={styles.statusDot} />
             <Text style={styles.statusText}>{isThinking ? 'Planning' : 'Ready'}</Text>
           </View>
-          <Text style={styles.headerTitle}>Life OS</Text>
+          <Text style={styles.headerTitle}>Space Time</Text>
           <Pressable
             style={styles.headerRight}
             onPress={() => router.push('/calendar')}
@@ -653,6 +714,7 @@ export default function ChatScreen() {
           />
         </KeyboardAvoidingView>
       </View>
+    </GestureDetector>
   );
 }
 

@@ -79,6 +79,18 @@ function buildSystemPrompt(userMessage, context) {
     ? `\n=== ACTIVE CONVERSATIONAL ACTIVITY ===\nThe user is currently discussing or recently created the activity with ID: "${activeActivityId}".\nIf they use pronouns (it, that, the meeting, etc.) or imply an update to the current context, you MUST use "${activeActivityId}" as the targetId.\n` 
     : '';
 
+  const snapshot = context?.currentStateSnapshot;
+  const stateSummary = snapshot ? `
+=== CURRENT DETERMINISTIC STATE ===
+- Running Activity: ${snapshot.running ? `"${snapshot.running.title}" (${snapshot.running.remainingMinutes}m left)` : 'None'}
+- Paused Activity: ${snapshot.paused ? `"${snapshot.paused.title}" (${snapshot.paused.remainingMinutes}m left)` : 'None'}
+- Scheduled NOW: ${snapshot.now.type !== 'none' ? `"${snapshot.now.title}"` : 'None'}
+- UP NEXT: ${snapshot.next ? `"${snapshot.next.title}" at minute ${snapshot.next.startMinute}` : 'None'}
+- Free Time Remaining: ${snapshot.availableMinutes} minutes
+- Work Remaining: ${snapshot.remainingWorkMinutes} minutes
+- Day Complete: ${snapshot.dayComplete ? 'Yes' : 'No'}
+` : '';
+
   const pendingClarification = context?.pendingClarification;
   const pendingSummary = pendingClarification
     ? `\n=== ACTIVE CONVERSATION CLARIFICATION IN PROGRESS ===
@@ -96,7 +108,7 @@ CRITICAL FOLLOW-UP INSTRUCTIONS:
 `
     : '';
 
-  return `You are the LANGUAGE UNDERSTANDING LAYER of Life OS — a personal operating system.
+  return `You are the LANGUAGE UNDERSTANDING LAYER of Space Time — a personal operating system.
 
 YOUR SOLE JOB: Convert what the user says into structured intent JSON.
 You do NOT schedule the user's day. You do NOT decide what time things happen.
@@ -105,6 +117,7 @@ You ONLY extract: operation, category, entities, scheduling semantics, and targe
 The application validates and executes your output deterministically.
 ${activeActivitySummary}
 ${pendingSummary}
+${stateSummary}
 
 === CRITICAL PRINCIPLES ===
 
@@ -154,7 +167,10 @@ ${pendingSummary}
    - "Never mind", "forget that", "cancel that" → cancel pending candidate if any, or clarify.
 
 8. QUERIES NEVER MUTATE STATE:
-   - "What's next?", "What am I doing tomorrow?", "Any free time?" → return get_schedule or get_free_time.
+   - "What's next?", "What should I do now?" → query_current_state
+   - "Am I done?", "What's left today?" → query_day_status
+   - "Do I have time for a 30 min run?" → query_feasibility
+   - "What am I doing tomorrow?", "Any free time?" → query_schedule or query_free_time
    - NEVER create an activity from a query.
 
 9. AVAILABILITY STATEMENTS:
@@ -190,7 +206,7 @@ process_intent: (STRONGLY PREFERRED for all operations)
 {
   "type": "process_intent",
   "payload": {
-    "operation": "create_activity" | "update_activity" | "delete_activity" | "complete_activity" | "skip_activity" | "log_constraint" | "query_schedule" | "query_free_time" | "clarification" | "context_statement" | "general_conversation",
+    "operation": "create_activity" | "update_activity" | "delete_activity" | "complete_activity" | "skip_activity" | "log_constraint" | "query_schedule" | "query_free_time" | "query_current_state" | "query_day_status" | "query_feasibility" | "clarification" | "context_statement" | "general_conversation",
     "targetId"?: string,        // REQUIRED for update/delete/complete/skip when ID is known
     "targetQuery"?: string,     // Fallback description if targetId is not known
     "category"?: "task" | "event" | "meeting" | "social" | "travel" | "reminder",
@@ -617,11 +633,11 @@ server.listen(PORT, '0.0.0.0', () => {
   const localIps = getLocalIpAddresses();
   const config = getProviderConfig();
   console.log(`\n==================================================`);
-  console.log(`[Life OS AI Backend] Server running on port ${PORT}`);
-  console.log(`[Life OS AI Backend] Provider: ${config.provider}`);
-  console.log(`[Life OS AI Backend] Configured Model: ${config.model}`);
-  console.log(`[Life OS AI Backend] API Key Set: ${config.hasApiKey ? 'YES' : `NO (Set ${config.provider.toUpperCase()}_API_KEY in .env)`}`);
-  console.log(`[Life OS AI Backend] Health check: http://localhost:${PORT}/health`);
+  console.log(`[Space Time AI Backend] Server running on port ${PORT}`);
+  console.log(`[Space Time AI Backend] Provider: ${config.provider}`);
+  console.log(`[Space Time AI Backend] Configured Model: ${config.model}`);
+  console.log(`[Space Time AI Backend] API Key Set: ${config.hasApiKey ? 'YES' : `NO (Set ${config.provider.toUpperCase()}_API_KEY in .env)`}`);
+  console.log(`[Space Time AI Backend] Health check: http://localhost:${PORT}/health`);
   console.log(`--------------------------------------------------`);
   console.log(`Reachable IP Addresses for Physical Device Testing:`);
   console.log(`- Localhost / Emulator: http://10.0.2.2:${PORT}`);

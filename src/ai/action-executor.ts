@@ -6,6 +6,7 @@ import {
   SchedulingSettings,
 } from '@/lib/scheduler';
 import { formatDisplayDate, getTodayString, isValidDateString, parseDateString } from '@/lib/date-time';
+import { getCurrentStateSnapshot } from '@/lib/current-state';
 import { AIAction, CanonicalScheduling, CreateTaskPayload, ExecutionResult, ExternalExecutionRequirement, SemanticEntities } from './ai-types';
 
 export type TaskOperations = {
@@ -157,6 +158,62 @@ export function executeAction(
       if (operation === 'query_free_time') {
         return executeAction({ type: 'get_free_time', payload: { date: scheduling?.date, targetDurationMinutes: scheduling?.durationMinutes } }, context);
       }
+
+      if (operation === 'query_current_state') {
+        const snapshot = getCurrentStateSnapshot(context.tasks, context.events ?? [], currentTime, settings);
+        let msg = '';
+        const formatTime = (min: number) => {
+          const h = Math.floor(min / 60);
+          const m = min % 60;
+          return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
+        };
+
+        if (snapshot.running) {
+           msg = `You're currently running ${snapshot.running.title}. You have about ${snapshot.running.remainingMinutes} minutes remaining.`;
+        } else if (snapshot.now.type !== 'none') {
+           msg = `You're currently scheduled for ${snapshot.now.title}.`;
+           if (snapshot.now.remainingMinutes !== undefined) {
+              msg += ` You have about ${snapshot.now.remainingMinutes} minutes remaining.`;
+           }
+        } else if (snapshot.next) {
+           msg = `You're free right now. Your next activity is ${snapshot.next.title} at ${formatTime(snapshot.next.startMinute!)}.`;
+        } else {
+           msg = `You're free right now, and you have no upcoming activities scheduled today.`;
+        }
+        return { success: true, message: msg };
+      }
+
+      if (operation === 'query_day_status') {
+        const snapshot = getCurrentStateSnapshot(context.tasks, context.events ?? [], currentTime, settings);
+        if (snapshot.dayComplete) {
+           return { success: true, message: `Yes, you are completely done for the day!` };
+        } else {
+           let msg = `You still have ${snapshot.remainingWorkMinutes} minutes of planned work remaining today.`;
+           if (snapshot.next) msg += ` Your next activity is ${snapshot.next.title}.`;
+           return { success: true, message: msg };
+        }
+      }
+
+      if (operation === 'query_feasibility') {
+        const snapshot = getCurrentStateSnapshot(context.tasks, context.events ?? [], currentTime, settings);
+        const reqDuration = scheduling?.durationMinutes ?? 30;
+        const fittingGap = snapshot.freeTime.find(gap => gap.durationMinutes >= reqDuration);
+        
+        const formatTime = (min: number) => {
+          const h = Math.floor(min / 60);
+          const m = min % 60;
+          return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
+        };
+
+        if (fittingGap) {
+           return { success: true, message: `Yes, you can fit a ${reqDuration} minute activity. There is a free slot from ${formatTime(fittingGap.startMinute)} to ${formatTime(fittingGap.endMinute)}.` };
+        } else if (snapshot.availableMinutes >= reqDuration) {
+           return { success: true, message: `You have ${snapshot.availableMinutes} minutes of total free time today, but no single continuous ${reqDuration} minute slot.` };
+        } else {
+           return { success: true, message: `No, you only have ${snapshot.availableMinutes} minutes of free time available today.` };
+        }
+      }
+
       if (operation === 'log_constraint') {
         if (!title) return { success: false, message: 'Missing title for constraint.' };
         context.operations.addTask({

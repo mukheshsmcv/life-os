@@ -12,6 +12,7 @@ export type AIParseContext = {
   timezone?: string;
   pendingClarification?: import('./ai-types').PendingClarification | null;
   activeActivityId?: string | null;
+  currentStateSnapshot?: import('@/lib/current-state').CurrentStateSnapshot;
 };
 
 /**
@@ -22,22 +23,24 @@ export type AIParseContext = {
  * 4. 10.0.2.2:3001 for Android Emulator / localhost:3001 for Web/iOS Simulator.
  */
 export function getDevServerBaseUrl(): string {
-  if (process.env.EXPO_PUBLIC_AI_SERVER_URL) {
-    return process.env.EXPO_PUBLIC_AI_SERVER_URL.replace(/\/$/, '');
-  }
-
-  const explicitIp = process.env.EXPO_PUBLIC_DEV_SERVER_IP;
-  if (explicitIp) {
-    return `http://${explicitIp.trim()}:3001`;
-  }
-
-  // Extract developer PC IP from Expo Metro bundler hostUri (e.g. "192.168.1.50:8081" -> "192.168.1.50")
+  // 1. Dynamic resolution from Expo Metro bundler connection (most reliable on physical phone via Expo Go / Dev Client)
   const hostUri = Constants.expoConfig?.hostUri || (Constants as any).manifest?.debuggerHost || (Constants as any).experienceUrl;
   if (hostUri && typeof hostUri === 'string' && hostUri.includes(':')) {
     const pcIp = hostUri.split(':')[0];
     if (pcIp && pcIp !== 'localhost' && pcIp !== '127.0.0.1') {
       return `http://${pcIp}:3001`;
     }
+  }
+
+  // 2. Explicit complete URL configured in .env (e.g., "http://192.168.1.3:3001")
+  if (process.env.EXPO_PUBLIC_AI_SERVER_URL) {
+    return process.env.EXPO_PUBLIC_AI_SERVER_URL.replace(/\/$/, '');
+  }
+
+  // 3. Explicit dev server IP configured in .env
+  const explicitIp = process.env.EXPO_PUBLIC_DEV_SERVER_IP;
+  if (explicitIp) {
+    return `http://${explicitIp.trim()}:3001`;
   }
 
   const defaultHost = Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
@@ -105,6 +108,7 @@ export async function parseIntentWithAI(
           timezone,
           pendingClarification: context.pendingClarification ?? null,
           activeActivityId: context.activeActivityId ?? null,
+          currentStateSnapshot: context.currentStateSnapshot ?? null,
         },
       }),
     });
