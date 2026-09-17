@@ -18,6 +18,7 @@ import { SymbolView } from 'expo-symbols';
 import { Event, Task, useTasks } from '@/contexts/tasks-context';
 import { formatDisplayDate, getDateString, getTodayString, getCalendarDays, addMonths, addDays } from '@/lib/date-time';
 import { DEFAULT_SCHEDULING_SETTINGS, scheduleTasks } from '@/lib/scheduler';
+import { TimeWheelPicker } from '@/components/time-wheel-picker';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -30,42 +31,6 @@ function minutesToDisplay(totalMins: number): string {
   const displayHours = hours % 12 || 12;
   return `${displayHours}:${pad(mins)} ${period}`;
 }
-
-type TimeVal = { h: string; m: string; isPM: boolean };
-
-function TimeInput({ value, onChange, label }: { value: TimeVal; onChange: (v: TimeVal) => void; label: string }) {
-  return (
-    <View style={ti.container}>
-      <Text style={ti.label}>{label}</Text>
-      <View style={ti.row}>
-        <TextInput
-          style={ti.input} keyboardType="number-pad" maxLength={2}
-          value={value.h} onChangeText={(h) => onChange({ ...value, h })}
-          placeholder="12" placeholderTextColor="#4A5060"
-        />
-        <Text style={ti.colon}>:</Text>
-        <TextInput
-          style={ti.input} keyboardType="number-pad" maxLength={2}
-          value={value.m} onChangeText={(m) => onChange({ ...value, m })}
-          placeholder="00" placeholderTextColor="#4A5060"
-        />
-        <Pressable style={ti.amPmBtn} onPress={() => onChange({ ...value, isPM: !value.isPM })}>
-          <Text style={ti.amPmText}>{value.isPM ? 'PM' : 'AM'}</Text>
-        </Pressable>
-      </View>
-    </View>
-  );
-}
-
-const ti = StyleSheet.create({
-  container: { marginBottom: 16 },
-  label: { color: '#A7A0FF', fontSize: 11, fontWeight: '700', marginBottom: 8, letterSpacing: 1.2 },
-  row: { flexDirection: 'row', alignItems: 'center' },
-  input: { backgroundColor: '#1E2228', color: '#E8E9EC', fontSize: 16, fontWeight: '600', borderRadius: 8, width: 48, height: 48, textAlign: 'center' },
-  colon: { color: '#737983', fontSize: 18, fontWeight: '700', marginHorizontal: 8 },
-  amPmBtn: { marginLeft: 12, backgroundColor: '#252932', borderRadius: 8, width: 48, height: 48, alignItems: 'center', justifyContent: 'center' },
-  amPmText: { color: '#E8E9EC', fontSize: 13, fontWeight: '700' },
-});
 
 // Fallback vector-drawn calendar icon component
 function CalendarFallbackIcon({ color = '#A7A0FF' }: { color?: string }) {
@@ -99,7 +64,7 @@ function CalendarFallbackIcon({ color = '#A7A0FF' }: { color?: string }) {
 export default function CalendarScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { tasks, events, addEvent } = useTasks();
+  const { tasks, events, addEvent, updateEvent, deleteEvent } = useTasks();
   
   const todayStr = getTodayString();
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
@@ -111,9 +76,11 @@ export default function CalendarScreen() {
   
   const [showBlockTime, setShowBlockTime] = useState(false);
   const [blockTitle, setBlockTitle] = useState('');
-  const [blockStart, setBlockStart] = useState<TimeVal>({ h: '4', m: '00', isPM: true });
-  const [blockEnd, setBlockEnd] = useState<TimeVal>({ h: '5', m: '00', isPM: true });
+  const [blockStart, setBlockStart] = useState<number>(960); // 4:00 PM
+  const [blockEnd, setBlockEnd] = useState<number>(1020); // 5:00 PM
   const [blockError, setBlockError] = useState('');
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const [now, setNow] = useState(() => new Date());
 
@@ -321,29 +288,68 @@ export default function CalendarScreen() {
     });
   }, [selectedDate, visibleMonthLabel, stripDates.length, explicitDayTasks.length, pendingDayTasks.length, completedOrSkippedTasks.length, dayEvents.length, tasks.length, timedItems.length, anytimeItems.length]);
 
-  const timeValToMinutes = (tv: TimeVal) => {
-    let h = parseInt(tv.h || '0', 10);
-    const m = parseInt(tv.m || '0', 10);
-    if (tv.isPM && h !== 12) h += 12;
-    if (!tv.isPM && h === 12) h = 0;
-    return h * 60 + m;
-  };
-
   const handleSaveBlock = () => {
     setBlockError('');
     if (!blockTitle.trim()) { setBlockError('Title is required'); return; }
-    const startM = timeValToMinutes(blockStart);
-    const endM = timeValToMinutes(blockEnd);
-    if (startM >= endM) { setBlockError('End time must be after start time'); return; }
+    if (blockStart >= blockEnd) { setBlockError('End time must be after start time'); return; }
 
-    addEvent({
-      title: blockTitle.trim(),
-      date: selectedDate,
-      startMinute: startM,
-      endMinute: endM,
-    });
+    if (editingEventId) {
+      updateEvent(editingEventId, {
+        title: blockTitle.trim(),
+        date: selectedDate,
+        startMinute: blockStart,
+        endMinute: blockEnd,
+        scheduling: { mode: 'fixed', date: selectedDate, startMinute: blockStart, endMinute: blockEnd },
+      });
+    } else {
+      addEvent({
+        title: blockTitle.trim(),
+        date: selectedDate,
+        startMinute: blockStart,
+        endMinute: blockEnd,
+        scheduling: { mode: 'fixed', date: selectedDate, startMinute: blockStart, endMinute: blockEnd },
+      });
+    }
     setBlockTitle('');
+    setEditingEventId(null);
     setShowBlockTime(false);
+  };
+
+  const handleDeleteEvent = () => {
+    if (editingEventId) {
+      deleteEvent(editingEventId);
+      setShowBlockTime(false);
+      setEditingEventId(null);
+      setBlockError('');
+    }
+  };
+
+  const openNewEventModal = () => {
+    setEditingEventId(null);
+    setBlockTitle('');
+    setBlockStart(960);
+    setBlockEnd(1020);
+    setBlockError('');
+    setShowDeleteConfirm(false);
+    setShowBlockTime(true);
+  };
+
+  const handleTapAgendaItem = (item: AgendaItem) => {
+    if (item.kind === 'event') {
+      const ev = events.find(e => e.id === item.id);
+      if (ev) {
+        setEditingEventId(ev.id);
+        setBlockTitle(ev.title);
+        const sM = ev.scheduling?.startMinute ?? ev.startMinute;
+        const dur = ev.scheduling?.durationMinutes ?? (ev.endMinute - ev.startMinute);
+        const eM = sM + dur;
+        setBlockStart(sM);
+        setBlockEnd(eM);
+        setBlockError('');
+        setShowDeleteConfirm(false);
+        setShowBlockTime(true);
+      }
+    }
   };
 
   return (
@@ -445,7 +451,7 @@ export default function CalendarScreen() {
                     const typeLabel = item.status.toUpperCase();
                     
                     return (
-                      <View key={item.id} style={[styles.agendaItem, isDone && styles.agendaItemDone]}>
+                      <Pressable key={item.id} style={[styles.agendaItem, isDone && styles.agendaItemDone]} onPress={() => handleTapAgendaItem(item)}>
                         <View style={styles.agendaTimeCol}>
                           <Text style={styles.agendaTimeText}>{minutesToDisplay(item.startMinute!)}</Text>
                         </View>
@@ -459,7 +465,7 @@ export default function CalendarScreen() {
                           </Text>
                           <Text style={styles.agendaItemMeta}>{item.duration}m · {typeLabel}</Text>
                         </View>
-                      </View>
+                      </Pressable>
                     );
                   })}
 
@@ -472,7 +478,7 @@ export default function CalendarScreen() {
                         const typeLabel = item.status.toUpperCase();
                         
                         return (
-                          <View key={item.id} style={[styles.agendaItem, isDone && styles.agendaItemDone]}>
+                          <Pressable key={item.id} style={[styles.agendaItem, isDone && styles.agendaItemDone]} onPress={() => handleTapAgendaItem(item)}>
                             <View style={styles.agendaTimeCol}>
                               <Text style={styles.agendaTimeText}>Anytime</Text>
                             </View>
@@ -486,7 +492,7 @@ export default function CalendarScreen() {
                               </Text>
                               <Text style={styles.agendaItemMeta}>{item.duration}m · {typeLabel}</Text>
                             </View>
-                          </View>
+                          </Pressable>
                         );
                       })}
                     </View>
@@ -496,7 +502,7 @@ export default function CalendarScreen() {
             </ScrollView>
             
             <View style={styles.footer}>
-              <Pressable style={styles.blockBtn} onPress={() => setShowBlockTime(true)}>
+              <Pressable style={styles.blockBtn} onPress={openNewEventModal}>
                 <Text style={styles.blockBtnText}>+ Block time</Text>
               </Pressable>
             </View>
@@ -504,9 +510,9 @@ export default function CalendarScreen() {
         ) : (
           /* BLOCK TIME FORM */
           <ScrollView style={styles.formScroll} contentContainerStyle={styles.formContent} keyboardShouldPersistTaps="handled">
-            <Text style={styles.formTitle}>BLOCK TIME</Text>
+            <Text style={styles.formTitle}>{editingEventId ? 'EDIT EVENT' : 'BLOCK TIME'}</Text>
             
-            <Text style={ti.label}>WHAT ARE YOU DOING?</Text>
+            <Text style={styles.timeLabel}>WHAT ARE YOU DOING?</Text>
             <TextInput
               style={styles.titleInput}
               placeholder="e.g. Meeting with Narendra"
@@ -514,13 +520,36 @@ export default function CalendarScreen() {
               value={blockTitle}
               onChangeText={setBlockTitle}
             />
-            
-            <View style={styles.timeInputsRow}>
-              <TimeInput label="START TIME" value={blockStart} onChange={setBlockStart} />
-              <TimeInput label="END TIME" value={blockEnd} onChange={setBlockEnd} />
-            </View>
 
-            {blockError ? <Text style={styles.errorText}>{blockError}</Text> : null}
+            <View style={styles.timeLabelRow}>
+              <Text style={styles.timeLabel}>START TIME</Text>
+            </View>
+            <TimeWheelPicker value={blockStart} onChange={setBlockStart} />
+            
+            <View style={[styles.timeLabelRow, { marginTop: 24 }]}>
+              <Text style={styles.timeLabel}>END TIME</Text>
+            </View>
+            <TimeWheelPicker value={blockEnd} onChange={setBlockEnd} />
+
+            {blockError ? <Text style={styles.errorText}>{blockError}</Text> : <View style={{ height: 16 }} />}
+
+            {editingEventId && !showDeleteConfirm && (
+              <Pressable style={styles.deleteBtn} onPress={() => setShowDeleteConfirm(true)}>
+                <Text style={styles.deleteBtnText}>Delete Event</Text>
+              </Pressable>
+            )}
+            
+            {editingEventId && showDeleteConfirm && (
+              <View style={styles.confirmDeleteRow}>
+                <Text style={styles.confirmDeleteText}>Are you sure?</Text>
+                <Pressable style={styles.confirmDeleteBtn} onPress={handleDeleteEvent}>
+                  <Text style={styles.confirmDeleteBtnText}>Yes, Delete</Text>
+                </Pressable>
+                <Pressable style={styles.cancelDeleteBtn} onPress={() => setShowDeleteConfirm(false)}>
+                  <Text style={styles.cancelDeleteBtnText}>No</Text>
+                </Pressable>
+              </View>
+            )}
 
             <View style={styles.formActions}>
               <Pressable style={styles.cancelBtn} onPress={() => setShowBlockTime(false)}>
@@ -611,8 +640,8 @@ const styles = StyleSheet.create({
     borderColor: '#252932',
     marginRight: 8,
   },
-  stripContent: { paddingRight: 16, gap: 8 },
-  stripItem: { width: 52, height: 64, alignItems: 'center', justifyContent: 'center', borderRadius: 12 },
+  stripContent: { paddingRight: 16 },
+  stripItem: { width: 52, height: 64, alignItems: 'center', justifyContent: 'center', borderRadius: 12, marginRight: 8 },
   stripItemSelected: { backgroundColor: '#A7A0FF' },
   stripDow: { color: '#737983', fontSize: 10, fontWeight: '700', marginBottom: 2 },
   stripDay: { color: '#E8E9EC', fontSize: 18, fontWeight: '600' },
@@ -650,13 +679,22 @@ const styles = StyleSheet.create({
   formContent: { padding: 20 },
   formTitle: { color: '#FFF', fontSize: 18, fontWeight: '700', marginBottom: 24 },
   titleInput: { backgroundColor: '#1E2228', color: '#E8E9EC', fontSize: 16, borderRadius: 12, padding: 16, marginBottom: 24 },
-  timeInputsRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
+  timeLabelRow: { marginBottom: 8 },
+  timeLabel: { color: '#A7A0FF', fontSize: 11, fontWeight: '700', letterSpacing: 1.2 },
   errorText: { color: '#FF7B7B', fontSize: 13, marginBottom: 16 },
   formActions: { flexDirection: 'row', gap: 12, marginTop: 12 },
   cancelBtn: { flex: 1, backgroundColor: '#252932', paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
   cancelBtnText: { color: '#E8E9EC', fontSize: 16, fontWeight: '700' },
   saveBtn: { flex: 1, backgroundColor: '#A7A0FF', paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
   saveBtnText: { color: '#0B0D10', fontSize: 16, fontWeight: '700' },
+  deleteBtn: { backgroundColor: '#1E2228', paddingVertical: 16, borderRadius: 12, alignItems: 'center', marginTop: 12, borderWidth: 1, borderColor: '#FF7B7B' },
+  deleteBtnText: { color: '#FF7B7B', fontSize: 16, fontWeight: '700' },
+  confirmDeleteRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#1E2228', padding: 12, borderRadius: 12, marginTop: 12 },
+  confirmDeleteText: { color: '#FF7B7B', fontSize: 14, fontWeight: '600', flex: 1 },
+  confirmDeleteBtn: { backgroundColor: '#FF7B7B', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 8, marginRight: 8 },
+  confirmDeleteBtnText: { color: '#0B0D10', fontSize: 14, fontWeight: '700' },
+  cancelDeleteBtn: { backgroundColor: '#252932', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 8 },
+  cancelDeleteBtnText: { color: '#E8E9EC', fontSize: 14, fontWeight: '700' },
 
   // Picker
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },

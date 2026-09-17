@@ -100,8 +100,8 @@ export default function TasksScreen() {
 
     // Swipe left (negative translationX)
     const isNegativeSwipe = translationX < 0 || (absoluteX !== undefined && startX > 0 && absoluteX - startX < 0);
-    const hasMinDistance = dx >= 40; // Lowered from 60
-    const isClearlyHorizontal = dx > absDy * 1.2; // Lowered from 1.4
+    const hasMinDistance = dx >= 60;
+    const isClearlyHorizontal = dx > absDy * 1.4;
 
     if (isClearlyHorizontal) {
       console.log(`[SWIPE_TASKS] horizontal detected. minDistance=${hasMinDistance}, isNegative=${isNegativeSwipe}`);
@@ -109,19 +109,15 @@ export default function TasksScreen() {
 
     if (hasNavigatedRef.current) return;
 
-    if (hasMinDistance && isClearlyHorizontal) {
-      if (isNegativeSwipe) {
-        console.log(`[SWIPE_TRACE][TASKS] LEFT SWIPE DETECTED -> navigating to /messenger`);
-        hasNavigatedRef.current = true;
-        router.navigate('/messenger');
-      } else {
-        console.log(`[SWIPE_TRACE][TASKS] RIGHT SWIPE DETECTED -> no action taken (Today is outside sequence)`);
-      }
+    if (isNegativeSwipe && hasMinDistance && isClearlyHorizontal) {
+      console.log(`[SWIPE_TASKS] LEFT TRIGGER`);
+      hasNavigatedRef.current = true;
+      router.navigate('/messenger');
     }
   };
 
   const swipeToMessagesGesture = Gesture.Pan()
-    .activeOffsetX([-10, 10]) // Lowered from [-20, 20]
+    .activeOffsetX([-20, 20])
     .runOnJS(true)
     .onBegin((event) => {
       console.log('[SWIPE_TASKS] gesture began');

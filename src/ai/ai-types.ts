@@ -121,6 +121,9 @@ export type IntentOperation =
   | 'log_constraint'
   | 'query_schedule'
   | 'query_free_time'
+  | 'query_current_state'
+  | 'query_day_status'
+  | 'query_feasibility'
   | 'clarification'
   | 'context_statement'
   | 'general_conversation';

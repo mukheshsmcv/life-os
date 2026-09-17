@@ -67,7 +67,7 @@ export function ChatComposer({
         <TextInput
           value={value}
           onChangeText={onChangeText}
-          placeholder={placeholder ?? 'Tell Life OS what you want…'}
+          placeholder={placeholder ?? 'Tell Space Time what you want…'}
           placeholderTextColor="#4A5060"
           style={[styles.input, { height: inputHeight }]}
           multiline

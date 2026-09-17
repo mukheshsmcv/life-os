@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Modal,
   Pressable,
@@ -11,15 +11,19 @@ import {
 
 import { useTasks, TaskPriority } from '@/contexts/tasks-context';
 import { getTodayString, getDateString, isValidDateString } from '@/lib/date-time';
+import { TimeWheelPicker } from '@/components/time-wheel-picker';
 
 type Props = {
   visible: boolean;
   onClose: () => void;
+  mode?: 'create' | 'edit';
+  activityId?: string;
+  activityType?: 'task' | 'event';
 };
 
-export function AddActionModal({ visible, onClose }: Props) {
-  const { addTask, addEvent } = useTasks();
-  const [activeTab, setActiveTab] = useState<'task' | 'event'>('task');
+export function AddActionModal({ visible, onClose, mode = 'create', activityId, activityType = 'task' }: Props) {
+  const { tasks, events, addTask, addEvent, updateTask, updateEvent } = useTasks();
+  const [activeTab, setActiveTab] = useState<'task' | 'event'>(activityType);
   const [formError, setFormError] = useState<string | null>(null);
 
   // Task form state
@@ -34,8 +38,8 @@ export function AddActionModal({ visible, onClose }: Props) {
   const [eventTitle, setEventTitle] = useState('');
   const [eventDateType, setEventDateType] = useState<'today' | 'tomorrow' | 'custom'>('today');
   const [eventCustomDate, setEventCustomDate] = useState('');
-  const [eventStartTime, setEventStartTime] = useState('07:00 PM');
-  const [eventEndTime, setEventEndTime] = useState('09:00 PM');
+  const [eventStartTime, setEventStartTime] = useState<number>(1140); // 19:00 -> 7:00 PM
+  const [eventEndTime, setEventEndTime] = useState<number>(1260); // 21:00 -> 9:00 PM
   const [eventNotes, setEventNotes] = useState('');
 
   const todayStr = getTodayString();
@@ -53,10 +57,44 @@ export function AddActionModal({ visible, onClose }: Props) {
     setEventTitle('');
     setEventDateType('today');
     setEventCustomDate('');
-    setEventStartTime('07:00 PM');
-    setEventEndTime('09:00 PM');
+    setEventStartTime(1140);
+    setEventEndTime(1260);
     setEventNotes('');
   };
+
+  useEffect(() => {
+    if (visible) {
+      if (mode === 'edit' && activityId) {
+        setActiveTab(activityType);
+        if (activityType === 'task') {
+          const task = tasks.find((t) => t.id === activityId);
+          if (task) {
+            setTaskTitle(task.title);
+            setTaskDuration(task.durationMinutes);
+            setTaskPriority(task.priority);
+            if (!task.scheduling.date) setTaskDateType('anytime');
+            else if (task.scheduling.date === todayStr) setTaskDateType('today');
+            else if (task.scheduling.date === tomorrowStr) setTaskDateType('tomorrow');
+            else { setTaskDateType('custom'); setTaskCustomDate(task.scheduling.date); }
+          }
+        } else {
+          const evt = events.find((e) => e.id === activityId);
+          if (evt) {
+            setEventTitle(evt.title);
+            if (evt.scheduling.date === todayStr) setEventDateType('today');
+            else if (evt.scheduling.date === tomorrowStr) setEventDateType('tomorrow');
+            else { setEventDateType('custom'); setEventCustomDate(evt.scheduling.date || ''); }
+            setEventStartTime(evt.scheduling.startMinute || 1140);
+            setEventEndTime(evt.scheduling.endMinute || 1260);
+            setEventNotes(evt.notes || '');
+          }
+        }
+      } else {
+        setActiveTab(activityType);
+        resetForm();
+      }
+    }
+  }, [visible, mode, activityId, activityType]);
 
   const switchTab = (tab: 'task' | 'event') => {
     setFormError(null);
@@ -100,34 +138,28 @@ export function AddActionModal({ visible, onClose }: Props) {
       finalDate = trimmedDate;
     }
 
-    addTask({
+    const payload = {
       title: taskTitle.trim(),
       durationMinutes: finalDuration,
       priority: taskPriority,
       date: finalDate,
       scheduling: {
-        mode: 'flexible',
+        mode: 'flexible' as const,
         date: finalDate,
         startMinute: null,
         endMinute: null,
       },
-    });
+    };
+
+    if (mode === 'edit' && activityId) {
+      updateTask(activityId, payload);
+    } else {
+      addTask(payload);
+    }
 
     resetForm();
     onClose();
   };
-
-  function parseTimeToMinutes(timeStr: string): number | null {
-    const match = timeStr.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-    if (!match) return null;
-    let hours = parseInt(match[1], 10);
-    const minutes = parseInt(match[2], 10);
-    if (hours < 1 || hours > 12 || minutes < 0 || minutes > 59) return null;
-    const period = match[3].toUpperCase();
-    if (period === 'PM' && hours < 12) hours += 12;
-    if (period === 'AM' && hours === 12) hours = 0;
-    return hours * 60 + minutes;
-  }
 
   const handleCreateEvent = () => {
     setFormError(null);
@@ -149,30 +181,30 @@ export function AddActionModal({ visible, onClose }: Props) {
       finalDate = trimmedDate;
     }
 
-    const startMin = parseTimeToMinutes(eventStartTime);
-    if (startMin === null) {
-      setFormError('Enter a valid start time (e.g. 07:00 PM).');
-      return;
-    }
-
-    const endMin = parseTimeToMinutes(eventEndTime);
-    if (endMin === null) {
-      setFormError('Enter a valid end time (e.g. 09:00 PM).');
-      return;
-    }
-
-    if (endMin <= startMin) {
+    if (eventStartTime >= eventEndTime) {
       setFormError('End time must be after start time.');
       return;
     }
 
-    addEvent({
+    const payload = {
       title: eventTitle.trim(),
       date: finalDate,
-      startMinute: startMin,
-      endMinute: endMin,
+      startMinute: eventStartTime,
+      endMinute: eventEndTime,
       notes: eventNotes.trim() || undefined,
-    });
+      scheduling: {
+        mode: 'fixed' as const,
+        date: finalDate,
+        startMinute: eventStartTime,
+        endMinute: eventEndTime,
+      },
+    };
+
+    if (mode === 'edit' && activityId) {
+      updateEvent(activityId, payload);
+    } else {
+      addEvent(payload);
+    }
 
     resetForm();
     onClose();
@@ -186,15 +218,15 @@ export function AddActionModal({ visible, onClose }: Props) {
           <View style={styles.header}>
             <View style={styles.tabSelector}>
               <Pressable
-                onPress={() => switchTab('task')}
-                style={[styles.tabButton, activeTab === 'task' && styles.tabButtonActive]}>
+                onPress={() => mode !== 'edit' && switchTab('task')}
+                style={[styles.tabButton, activeTab === 'task' && styles.tabButtonActive, mode === 'edit' && activeTab !== 'task' && { opacity: 0.3 }]}>
                 <Text style={[styles.tabText, activeTab === 'task' && styles.tabTextActive]}>
                   ➕ Task
                 </Text>
               </Pressable>
               <Pressable
-                onPress={() => switchTab('event')}
-                style={[styles.tabButton, activeTab === 'event' && styles.tabButtonActive]}>
+                onPress={() => mode !== 'edit' && switchTab('event')}
+                style={[styles.tabButton, activeTab === 'event' && styles.tabButtonActive, mode === 'edit' && activeTab !== 'event' && { opacity: 0.3 }]}>
                 <Text style={[styles.tabText, activeTab === 'event' && styles.tabTextActive]}>
                   📅 Fixed Event
                 </Text>
@@ -323,7 +355,7 @@ export function AddActionModal({ visible, onClose }: Props) {
                 {formError && <Text style={styles.errorText}>{formError}</Text>}
 
                 <Pressable onPress={handleCreateTask} style={styles.submitButton}>
-                  <Text style={styles.submitText}>Save Task</Text>
+                  <Text style={styles.submitText}>{mode === 'edit' ? 'Save Changes' : 'Save Task'}</Text>
                 </Pressable>
               </View>
             ) : (
@@ -387,33 +419,18 @@ export function AddActionModal({ visible, onClose }: Props) {
                     style={[styles.input, { marginTop: 10 }]}
                   />
                 )}
-
-                <View style={{ flexDirection: 'row', gap: 12, marginTop: 16 }}>
+                <View style={{ flexDirection: 'row', gap: 16, marginTop: 16 }}>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.label}>START TIME</Text>
-                    <TextInput
-                      value={eventStartTime}
-                      onChangeText={(text) => {
-                        setEventStartTime(text);
-                        if (formError) setFormError(null);
-                      }}
-                      placeholder="07:00 PM"
-                      placeholderTextColor="#636870"
-                      style={styles.input}
-                    />
+                    <View style={styles.timeLabelRow}>
+                      <Text style={styles.label}>START TIME</Text>
+                    </View>
+                    <TimeWheelPicker value={eventStartTime} onChange={setEventStartTime} />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.label}>END TIME</Text>
-                    <TextInput
-                      value={eventEndTime}
-                      onChangeText={(text) => {
-                        setEventEndTime(text);
-                        if (formError) setFormError(null);
-                      }}
-                      placeholder="09:00 PM"
-                      placeholderTextColor="#636870"
-                      style={styles.input}
-                    />
+                    <View style={styles.timeLabelRow}>
+                      <Text style={styles.label}>END TIME</Text>
+                    </View>
+                    <TimeWheelPicker value={eventEndTime} onChange={setEventEndTime} />
                   </View>
                 </View>
 
@@ -429,7 +446,7 @@ export function AddActionModal({ visible, onClose }: Props) {
                 {formError && <Text style={styles.errorText}>{formError}</Text>}
 
                 <Pressable onPress={handleCreateEvent} style={styles.submitButton}>
-                  <Text style={styles.submitText}>Save Fixed Event</Text>
+                  <Text style={styles.submitText}>{mode === 'edit' ? 'Save Changes' : 'Save Fixed Event'}</Text>
                 </Pressable>
               </View>
             )}
@@ -567,5 +584,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
   },
+  timeLabelRow: { marginBottom: 8 },
 });
 
